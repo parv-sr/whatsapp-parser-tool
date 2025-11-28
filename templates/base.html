@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %}Whatsapp Parser Tool - Real Estate{% endblock %}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+
+    <style>
+        /* --- 1. GLOBAL THEME (The "Midnight" Gradient) --- */
+        body {
+            /* This gradient stays fixed while content scrolls */
+            background-image: radial-gradient(circle at 10% 20%, rgb(30, 40, 50) 0%, rgb(0, 0, 0) 90%);
+            background-attachment: fixed;
+            background-size: cover;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* --- 2. GLASS NAVBAR --- */
+        header.glass-header {
+            position: sticky;
+            top: 0;
+            z-index: 999;
+            padding: 1rem 0;
+            margin-bottom: 2rem;
+            
+            /* The Glass Effect */
+            background: rgba(20, 25, 30, 0.7); /* Dark semi-transparent */
+            backdrop-filter: blur(12px);       /* The Blur */
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        /* Adjust Nav Layout */
+        header.glass-header nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        header.glass-header ul {
+            margin: 0;
+        }
+
+        /* --- 3. GLASS BUTTONS & LINKS --- */
+        
+        /* Brand Name Style */
+        .brand-title {
+            font-weight: 800;
+            font-size: 1.25rem;
+            color: #fff;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            background: -webkit-linear-gradient(45deg, #fff, #a2a2a2);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        /* Overriding Pico's default buttons for a softer "Glass" look */
+        nav a[role="button"] {
+            background-color: rgba(255, 255, 255, 0.1) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            color: #e0e0e0 !important;
+            backdrop-filter: blur(4px);
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+            padding: 0.4rem 1rem;
+        }
+
+        nav a[role="button"]:hover {
+            background-color: rgba(255, 255, 255, 0.2) !important;
+            border-color: rgba(255, 255, 255, 0.4) !important;
+            color: #fff !important;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+
+        /* The "Secondary" link (Logout) - make it subtle text */
+        nav a.secondary {
+            color: #a0a0a0;
+            text-decoration: none;
+            font-size: 0.9rem;
+            margin-left: 10px;
+            transition: color 0.2s;
+        }
+        nav a.secondary:hover {
+            color: #ff6b6b; /* Reddish tint on hover for logout */
+        }
+
+        /* --- 4. MAIN CONTAINER --- */
+        main.container {
+            flex: 1; /* Pushes footer down if you have one */
+            padding-bottom: 3rem;
+        }
+
+        /* --- 5. GLOBAL FORM INPUT OVERRIDES (Matches Login) --- */
+        /* This ensures inputs on Upload/Chat pages also look like glass */
+        input:not([type="submit"]):not([type="button"]):not([type="reset"]), 
+        select, 
+        textarea {
+            background-color: rgba(0, 0, 0, 0.3) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            color: white !important;
+        }
+        
+        input:focus, select:focus, textarea:focus {
+            background-color: rgba(0, 0, 0, 0.5) !important;
+            border-color: var(--pico-primary) !important;
+            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.1);
+        }
+
+        /* Card / Containers standard style */
+        article, .card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+    </style>
+    
+    {% block extra_head %}{% endblock %}
+</head>
+
+<body>
+
+<header class="glass-header">
+    <div class="container">
+        <nav>
+            <ul>
+                <li><strong class="brand-title">Whatsapp Parser</strong></li>
+            </ul>
+            <ul>
+                {% if user.is_authenticated %}
+                    <li><a href="{% url 'ingestion:upload_files' %}" role="button">Upload</a></li>
+                    <li><a href="{% url 'ingestion:uploads_list' %}" role="button">Uploads</a></li>
+                    <li><a href="{% url 'core:chat_view' %}" role="button">Chat</a></li>
+                    <li><a href="{% url 'users:logout' %}" class="secondary">Logout</a></li>
+                {% else %}
+                    <li><a href="{% url 'users:login' %}" role="button">Login</a></li>
+                {% endif %}
+            </ul>
+        </nav>
+    </div>
+</header>
+
+<main class="container">
+    {% if messages %}
+        {% for message in messages %}
+            <article style="padding: 1rem; margin-bottom: 2rem; background: rgba(0,255,0,0.1); border: 1px solid green;">
+                {{ message }}
+            </article>
+        {% endfor %}
+    {% endif %}
+
+    {% block content %}
+    {% endblock %}
+</main>
+
+</body>
+</html>

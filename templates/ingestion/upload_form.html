@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block content %}
+
+<style>
+    /* Full-center the upload card */
+    .upload-wrapper {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 80vh;
+        padding: 2rem 1rem;
+    }
+
+    .glass-card {
+        width: 100%;
+        max-width: 520px;
+        padding: 3rem 2.5rem;
+        background: rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+        border-radius: 24px;
+        text-align: center;
+    }
+
+    .glass-card h2 {
+        color: white;
+        margin-bottom: 0.5rem;
+        font-weight: 700;
+        font-size: 1.8rem;
+    }
+
+    .glass-card p {
+        color: rgba(255, 255, 255, 0.7);
+        margin-bottom: 2.5rem;
+        font-size: 1rem;
+        line-height: 1.5;
+    }
+
+    /* Custom styled file upload area */
+    .file-upload-area {
+        position: relative;
+        display: block;
+        width: 100%;
+        background: rgba(0, 0, 0, 0.25);
+        border: 2px dashed rgba(255, 255, 255, 0.25);
+        border-radius: 16px;
+        padding: 3rem 1.5rem;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        margin-bottom: 1.8rem;
+        overflow: hidden;
+    }
+
+    .file-upload-area:hover {
+        border-color: var(--pico-primary, #0066ff);
+        background: rgba(0, 0, 0, 0.4);
+        transform: translateY(-4px);
+        box-shadow: 0 15px 30px rgba(0, 0, 0, 0.3);
+    }
+
+    .file-upload-area.dragover {
+        border-color: var(--pico-primary, #0066ff);
+        background: rgba(0, 100, 255, 0.15);
+        transform: scale(1.02);
+    }
+
+    .file-upload-text {
+        color: rgba(255, 255, 255, 0.9);
+        font-size: 1.1rem;
+        font-weight: 500;
+        pointer-events: none;
+    }
+
+    .file-upload-text small {
+        display: block;
+        margin-top: 0.5rem;
+        color: rgba(255, 255, 255, 0.6);
+        font-size: 0.9rem;
+        font-weight: normal;
+    }
+
+    /* Hide the real file input */
+    input[type="file"] {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        border: 0;
+        opacity: 0;
+    }
+
+    /* Submit button */
+    button[type="submit"] {
+        width: 100%;
+        background: var(--pico-primary-background, linear-gradient(135deg, #0066ff, #00aaff));
+        color: white;
+        border: none;
+        padding: 0.9rem 1rem;
+        font-weight: 600;
+        font-size: 1.1rem;
+        border-radius: 12px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 15px rgba(0, 102, 255, 0.4);
+    }
+
+    button[type="submit"]:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 10px 25px rgba(0, 102, 255, 0.5);
+    }
+
+    button[type="submit"]:active {
+        transform: translateY(-1px);
+    }
+</style>
+
+<div class="upload-wrapper">
+    <article class="glass-card">
+        <h2>Upload WhatsApp Chats</h2>
+        <p>Select or drop your exported .txt files to start parsing real estate listings</p>
+
+        <form method="post" enctype="multipart/form-data" id="uploadForm">
+            {% csrf_token %}
+
+            <label for="files" class="file-upload-area" id="fileUploadArea">
+                <div class="file-upload-text">
+                    <strong>Click to upload or drop files here</strong>
+                    <small>.txt files supported • WhatsApp chat exports only</small>
+                    <div id="file-list" style="margin-top: 1rem; color: #4ade80; font-size: 0.95rem; font-weight: 600;"></div>
+                </div>
+                <input 
+                    type="file" 
+                    name="files" 
+                    id="files" 
+                    multiple 
+                    accept=".txt,text/plain" 
+                    required 
+                />
+            </label>
+
+            <button type="submit">Start Processing</button>
+        </form>
+    </article>
+</div>
+
+<!-- Optional: Nice drag & drop feedback -->
+<script>
+document.getElementById('fileUploadArea').addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.currentTarget.classList.add('dragover');
+});
+
+document.getElementById('fileUploadArea').addEventListener('dragleave', (e) => {
+    e.currentTarget.classList.remove('dragover');
+});
+
+document.getElementById('fileUploadArea').addEventListener('drop', (e) => {
+    e.currentTarget.classList.remove('dragover');
+});
+
+const fileInput = document.getElementById('files');
+const fileListDisplay = document.getElementById('file-list');
+
+fileInput.addEventListener('change', function() {
+    if (this.files.length > 0) {
+        // Create a comma-separated list of file names
+        const names = Array.from(this.files).map(file => file.name).join(', ');
+        fileListDisplay.textContent = "Selected: " + names;
+    } else {
+        fileListDisplay.textContent = "";
+    }
+});
+</script>
+
+{% endblock %}

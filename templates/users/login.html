@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<style>
+    /* 1. LAYOUT WRAPPER */
+    /* Instead of styling 'body', we center content inside this wrapper */
+    .login-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 80vh; /* Takes up most of the vertical screen space */
+        width: 100%;
+    }
+
+    /* 2. THE GLASS CARD */
+    .glass-login-card {
+        width: 100%;
+        max-width: 400px; /* Keeps it nice and compact */
+        padding: 2.5rem;
+        
+        /* Glass Effect */
+        background: rgba(255, 255, 255, 0.03);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+        border-radius: 16px;
+    }
+
+    /* 3. TYPOGRAPHY & INPUTS */
+    .glass-login-card h2 {
+        margin-bottom: 0.5rem;
+        font-weight: 700;
+        color: white;
+        text-align: center;
+    }
+
+    .glass-login-card p {
+        font-size: 0.9rem;
+        opacity: 0.7;
+        margin-bottom: 2rem;
+        text-align: center;
+        color: #a0a0a0;
+    }
+
+    /* Input overrides for the glass look */
+    .glass-login-card input {
+        background: rgba(0, 0, 0, 0.3) !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        color: white !important;
+        transition: all 0.2s ease;
+    }
+
+    .glass-login-card input:focus {
+        background: rgba(0, 0, 0, 0.5) !important;
+        border-color: var(--pico-primary) !important;
+        box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
+    }
+
+    .glass-login-card button {
+        width: 100%;
+        margin-top: 1.5rem;
+        font-weight: 600;
+        border: none;
+        background-color: #fff; /* High contrast button */
+        color: #000;
+    }
+    
+    .glass-login-card button:hover {
+        background-color: #e0e0e0;
+    }
+
+    /* Error Styling */
+    .errorlist {
+        color: #ff6b6b;
+        list-style: none;
+        padding: 0.75rem;
+        margin-bottom: 1.5rem;
+        font-size: 0.85rem;
+        background: rgba(255, 107, 107, 0.1);
+        border-radius: 8px;
+        border: 1px solid rgba(255, 107, 107, 0.2);
+        text-align: center;
+    }
+</style>
+
+<div class="login-container">
+    
+    <article class="glass-login-card">
+        
+        <h2>Welcome Back</h2>
+        <p>Enter your credentials to access the chat</p>
+
+        <form method="post">
+            {% csrf_token %}
+
+            {% if form.non_field_errors %}
+                <div class="errorlist">
+                    {{ form.non_field_errors }}
+                </div>
+            {% endif %}
+
+            <label for="{{ form.username.id_for_label }}">Username</label>
+            {{ form.username }}
+
+            <label for="{{ form.password.id_for_label }}">Password</label>
+            {{ form.password }}
+
+            <button type="submit">Log In</button>
+        </form>
+
+    </article>
+</div>
+
+{% endblock %}

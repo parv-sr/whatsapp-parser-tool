@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+
+{% block title %}All Uploads{% endblock %}
+
+{% block content %}
+
+<style>
+    .list-container {
+        max-width: 1000px;
+        margin: 0 auto;
+    }
+
+    h2 { color: white; margin-bottom: 0.2rem; }
+    .subtitle { color: rgba(255,255,255,0.5); font-size: 0.9rem; margin-bottom: 2rem; }
+
+    /* Glass Table Container */
+    .glass-table-wrapper {
+        background: rgba(255, 255, 255, 0.03);
+        backdrop-filter: blur(16px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 16px;
+        overflow: hidden; /* Rounds the corners of the table */
+        box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    }
+
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 0; /* Remove default margin */
+    }
+
+    thead {
+        background: rgba(0,0,0,0.2);
+    }
+
+    th {
+        color: rgba(255,255,255,0.7);
+        font-weight: 600;
+        text-transform: uppercase;
+        font-size: 0.8rem;
+        padding: 1rem;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+
+    td {
+        padding: 1rem;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+        color: white;
+        vertical-align: middle;
+    }
+
+    tr:last-child td { border-bottom: none; }
+    tr:hover { background: rgba(255,255,255,0.02); }
+
+    /* Status Pills */
+    .badge {
+        display: inline-block;
+        padding: 0.25em 0.8em;
+        font-size: 0.75rem;
+        font-weight: 700;
+        border-radius: 50px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .badge-completed { background: rgba(74, 222, 128, 0.15); color: #4ade80; border: 1px solid rgba(74, 222, 128, 0.2); }
+    .badge-processing { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.2); }
+    .badge-failed { background: rgba(248, 113, 113, 0.15); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.2); }
+    .badge-pending { background: rgba(255, 255, 255, 0.1); color: #aaa; border: 1px solid rgba(255, 255, 255, 0.1); }
+
+    /* Mini Progress Bar in Table */
+    progress {
+        height: 6px;
+        border-radius: 4px;
+        background: rgba(255,255,255,0.1);
+        width: 100px;
+        vertical-align: middle;
+    }
+    progress::-webkit-progress-value { background: var(--pico-primary); }
+    small { color: rgba(255,255,255,0.5); margin-left: 8px; font-size: 0.8rem; }
+</style>
+
+<div class="list-container">
+    <h2>📁 All Uploaded Files</h2>
+    <p class="subtitle">Track processing progress and final status of every file.</p>
+
+    <div class="glass-table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>File Name</th>
+                    <th>Status</th>
+                    <th>Uploaded At</th>
+                    <th>Progress</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for file in files %}
+                <tr id="row-{{ file.id }}">
+                    <td><strong>{{ file.file_name }}</strong></td>
+
+                    <td>
+                        {% if file.status == "COMPLETED" %}
+                            <span class="badge badge-completed">Completed</span>
+                        {% elif file.status == "PROCESSING" %}
+                            <span class="badge badge-processing">Processing</span>
+                        {% elif file.status == "FAILED" %}
+                            <span class="badge badge-failed">Failed</span>
+                        {% else %}
+                            <span class="badge badge-pending">Pending</span>
+                        {% endif %}
+                    </td>
+
+                    <td style="color: rgba(255,255,255,0.6); font-size: 0.9rem;">
+                        {{ file.uploaded_at|date:"d M Y, H:i" }}
+                    </td>
+
+                    <td>
+                        {% if file.status == "PROCESSING" %}
+                            <progress id="progress-{{ file.id }}" value="0" max="100"></progress>
+                            <small id="progress-text-{{ file.id }}">starting…</small>
+                        {% elif file.status == "COMPLETED" %}
+                            <span style="color: #4ade80; font-size: 0.9rem;">✔ Done</span>
+                        {% else %}
+                            <span style="color: rgba(255,255,255,0.2);">—</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+function updateProgress() {
+    fetch("/ingestion/progress/")
+    .then(res => res.json())
+    .then(data => {
+        data.files.forEach(file => {
+            const bar = document.getElementById("progress-" + file.id);
+            const txt = document.getElementById("progress-text-" + file.id);
+
+            if (bar && txt) {
+                bar.value = file.progress;
+                txt.innerText = file.progress + "%";
+
+                if (file.progress >= 100) {
+                    txt.innerText = "Completed!";
+                    bar.value = 100;
+                }
+            }
+        });
+    });
+}
+
+// Poll if any PROCESSING rows exist
+setInterval(updateProgress, 2000);
+</script>
+
+{% endblock %}

@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<style>
+    /* Layout */
+    .success-container {
+        max-width: 800px;
+        margin: 0 auto;
+    }
+
+    .glass-panel {
+        background: rgba(255, 255, 255, 0.03);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 16px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    }
+
+    h2 { color: white; margin-bottom: 0.5rem; }
+    h3 { color: var(--pico-primary); font-size: 1.1rem; margin-top: 0; margin-bottom: 1rem; text-transform: uppercase; letter-spacing: 1px; }
+    p { color: #ccc; }
+
+    /* File List Styling */
+    .file-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+    .file-list li {
+        background: rgba(255,255,255,0.05);
+        margin-bottom: 0.5rem;
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        color: white;
+        display: flex;
+        align-items: center;
+        border: 1px solid rgba(255,255,255,0.05);
+    }
+    .file-list li::before {
+        content: "📄";
+        margin-right: 10px;
+    }
+
+    /* Processing List Styling */
+    #processing-list {
+        list-style: none;
+        padding: 0;
+    }
+    #processing-list li {
+        background: rgba(0,0,0,0.2);
+        padding: 1rem;
+        border-radius: 12px;
+        margin-bottom: 1rem;
+        border: 1px solid rgba(255,255,255,0.05);
+    }
+
+    strong { color: white; }
+
+    /* Custom Progress Bar for Dark Mode */
+    progress {
+        background-color: rgba(255,255,255,0.1);
+        border-radius: 10px;
+        height: 8px;
+        width: 100% !important; /* Force full width */
+        margin-top: 0.5rem;
+    }
+    progress::-webkit-progress-bar {
+        background-color: rgba(255,255,255,0.1);
+        border-radius: 10px;
+    }
+    progress::-webkit-progress-value {
+        background-color: var(--pico-primary);
+        border-radius: 10px;
+        box-shadow: 0 0 10px var(--pico-primary); /* Glow effect */
+    }
+
+    /* Status Colors */
+    .status-text { color: #aaa; font-size: 0.9rem; margin-left: 0.5rem; }
+    .status-success { color: #4ade80 !important; font-weight: bold; text-shadow: 0 0 10px rgba(74, 222, 128, 0.4); }
+
+    /* Link Button */
+    .btn-secondary {
+        display: inline-block;
+        margin-top: 1rem;
+        color: rgba(255,255,255,0.7);
+        text-decoration: none;
+        border: 1px solid rgba(255,255,255,0.2);
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        transition: all 0.2s;
+    }
+    .btn-secondary:hover {
+        background: rgba(255,255,255,0.1);
+        color: white;
+        border-color: white;
+    }
+</style>
+
+<div class="success-container">
+    
+    <div style="text-align: center; margin-bottom: 2rem;">
+        <h2>Upload Successful 🚀</h2>
+        <p>Your files have been queued. Watch the magic happen below.</p>
+    </div>
+
+    <div class="glass-panel">
+        <h3>📁 Uploaded Files</h3>
+        {% if uploaded_files %}
+        <ul class="file-list">
+          {% for file in uploaded_files %}
+            <li>{{ file }}</li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p>No files were uploaded.</p>
+        {% endif %}
+    </div>
+
+    <div class="glass-panel">
+        <h3>⚙️ Processing Status</h3>
+        <div id="processing-container">
+          {% if processing_files %}
+            <ul id="processing-list">
+              {% for file_id in processing_files %}
+                <li id="file-wrapper-{{ file_id }}">
+                  <div style="display: flex; justify-content: space-between;">
+                      <span><strong>ID: {{ file_id }}</strong></span>
+                      <span id="status-{{ file_id }}" class="status-text">starting…</span>
+                  </div>
+                  <progress id="progress-{{ file_id }}" value="0" max="100"></progress>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p>No files are currently processing.</p>
+          {% endif %}
+        </div>
+    </div>
+
+    <div style="text-align: center;">
+        <p>
+          <a href="{% url 'ingestion:uploads_list' %}" role="button" class="btn-secondary">
+              View All Uploads
+          </a>
+        </p>
+    </div>
+
+</div>
+
+<script>
+  if (!window.__progressIntervalInstalled) {
+    window.__progressIntervalInstalled = true;
+
+    async function fetchProgress() {
+      try {
+        const resp = await fetch("/ingestion/progress/");
+        if (!resp.ok) throw new Error("bad response");
+        const data = await resp.json();
+
+        // if no files server-side; stop polling
+        if (!data.files || data.files.length === 0) {
+          clearInterval(window.__progressInterval);
+          window.__progressInterval = null;
+          // optional: mark all progress bars complete
+          document.querySelectorAll("progress[id^='progress-']").forEach(p => p.value = 100);
+          return;
+        }
+
+        let allDone = true;
+        data.files.forEach((file) => {
+          const progressEl = document.getElementById("progress-" + file.id);
+          const statusEl = document.getElementById("status-" + file.id);
+          const wrapper = document.getElementById("file-wrapper-" + file.id);
+
+          if (!progressEl || !statusEl) return;
+
+          progressEl.value = file.progress;
+
+          if (file.progress >= 100) {
+            statusEl.textContent = "Completed!";
+            statusEl.classList.add("status-success");
+            // remove the DOM entry after 8s to keep UI clean
+            setTimeout(() => {
+              if (wrapper && wrapper.parentNode) wrapper.parentNode.removeChild(wrapper);
+            }, 8000);
+          } else {
+            statusEl.textContent = file.progress + "%";
+            allDone = false;
+          }
+        });
+
+        // if all done (no non-100%), stop polling
+        if (allDone) {
+          clearInterval(window.__progressInterval);
+          window.__progressInterval = null;
+        }
+      } catch (e) {
+        console.warn("fetchProgress error:", e);
+        // if network consistently fails, stop polling after N tries (optional)
+      }
+    }
+
+    // start: call once then set interval
+    fetchProgress();
+    window.__progressInterval = setInterval(fetchProgress, 2000);
+  }
+</script>
+
+
+{% endblock %}

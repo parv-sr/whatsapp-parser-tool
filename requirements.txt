@@ -1,0 +1,14 @@
+django                  # Main webapp framework
+psycopg2-binary         # PostgreSQL extension for Django
+regex                   # For textual chunking (basically a text utility)
+python-dotenv           # For reading environemnt variables. 
+openai                  # For calling openai apis
+pydantic                # Provides structure to inference drawn from LLMs
+simhash                 # For deduping using fuzzy matching
+celery                  # For running simultaneous tasks using celery workers
+django-redis            # DB utility for celery
+rapidfuzz               # For secondary deduping using fuzzy matching
+numpy                   # ANN Vector search utility (its literally THE numpy)
+ujson                   # Metadata search utility
+bleach                  # Utility for cleaner tabular responses
+whitenoise              # Utility for serving static files
