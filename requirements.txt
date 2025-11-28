@@ -14,3 +14,4 @@ bleach                  # Utility for cleaner tabular responses
 whitenoise              # Utility for serving static files
 pgvector                #literally pgvector
 python-magic            #idk
+uvicorn[standard]       #asgi utility
