@@ -181,11 +181,11 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 
-FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", "/var/data/faiss/index.faiss")
-FAISS_INDEX_META_PATH = os.getenv("FAISS_INDEX_META_PATH", "/var/data/faiss/index_meta.json")
-FAISS_VECTOR_DIM = int(os.getenv("FAISS_VECTOR_DIM", "1536"))
-FAISS_HNSW_M = int(os.getenv("FAISS_HNSW_M", "32"))
-FAISS_EF_CONSTRUCTION = int(os.getenv("FAISS_EF_CONSTRUCTION", "256"))
-FAISS_EF_SEARCH = int(os.getenv("FAISS_EF_SEARCH", "64"))
-FAISS_BATCH_SIZE = int(os.getenv("FAISS_BATCH_SIZE", "512"))
-FAISS_REBUILD_THRESHOLD = int(os.getenv("FAISS_REBUILD_THRESHOLD", "10000"))  # optional logic
+CSRF_TRUSTED_ORIGINS = [
+    'https://whatsapp-parser-tool.onrender.com'
+]
+
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SECURE_SSL_REDIRECT = True
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
