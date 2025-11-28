@@ -103,8 +103,11 @@ DATABASES = {
         'HOST': os.getenv("DB_HOST"),
         'PORT': os.getenv("DB_PORT"),
         'POOL_MODE': 'transaction',
+        'CONN_MAX_AGE': 0,
+        'DISABLE_SERVER_SIDE_CURSORS': True,
         'OPTIONS': {
             'sslmode': 'require',
+            'options': '-c search_path=public',
         }
     }
 }
@@ -121,7 +124,7 @@ DATABASES = {
     }
 }
 """
-
+"""
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
@@ -131,6 +134,7 @@ CACHES = {
         }
     }
 }
+"""
 
 CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"
 CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/0"
