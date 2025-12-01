@@ -125,7 +125,10 @@ DATABASES = {
 }
 """
 
-REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/1')
+REDIS_URL = os.getenv('REDIS_URL')
+
+if not REDIS_URL:
+    REDIS_URL = 'redis://127.0.0.1:6379/1'
 
 
 CACHES = {
@@ -142,6 +145,8 @@ CACHES = {
 
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
+CELERY_BROKER_USE_SSL = {'ssl_cert_reqs': 'NONE'}
+CELERY_REDIS_BACKEND_USE_SSL = {'ssl_cert_reqs': 'NONE'}
 
 
 # Password validation
