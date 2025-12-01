@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 from pathlib import Path
 import os
 from dotenv import load_dotenv
+import ssl
 
 load_dotenv()
 
@@ -127,9 +128,27 @@ DATABASES = {
 
 REDIS_URL = os.getenv('REDIS_URL')
 
-if not REDIS_URL:
+if not REDIS_URL or REDIS_URL.strip() == "":
     REDIS_URL = 'redis://127.0.0.1:6379/1'
 
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
+CELERY_BROKER_USE_SSL = {'ssl_cert_reqs': 'NONE'}
+CELERY_REDIS_BACKEND_USE_SSL = {'ssl_cert_reqs': 'NONE'}
+
+
+if REDIS_URL.startswith("rediss://"):
+    CELERY_BROKER_USE_SSL = {"ssl_cert_reqs": ssl.CERT_NONE}
+    CELERY_REDIS_BACKEND_USE_SSL = {"ssl_cert_reqs": ssl.CERT_NONE}
+    
+    if "?" not in REDIS_URL:
+        REDIS_URL += "?ssl_cert_reqs=none"
+    elif "ssl_cert_reqs" not in REDIS_URL:
+        REDIS_URL += "&ssl_cert_reqs=none"
+
+
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
 
 CACHES = {
     "default": {
@@ -142,11 +161,6 @@ CACHES = {
     }
 }
 
-
-CELERY_BROKER_URL = REDIS_URL
-CELERY_RESULT_BACKEND = REDIS_URL
-CELERY_BROKER_USE_SSL = {'ssl_cert_reqs': 'NONE'}
-CELERY_REDIS_BACKEND_USE_SSL = {'ssl_cert_reqs': 'NONE'}
 
 
 # Password validation
