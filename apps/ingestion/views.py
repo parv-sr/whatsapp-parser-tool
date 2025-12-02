@@ -9,6 +9,7 @@ from django.utils import timezone
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.contrib.auth.decorators import login_required
+from django.db import transaction
 
 from .forms import MultiTxtUploadForm
 from .models import RawFile
@@ -78,10 +79,8 @@ def upload_files(request):
                 owner = request.user,
             )
             created.append(rf)
-
-            # <-- FIX: track by ID
+            # track by ID
             processing_ids.append(rf.id)
-
             # Save progress=0 in cache for this file
             cache.set(f"progress:{rf.id}", 0)
 
@@ -91,12 +90,11 @@ def upload_files(request):
                 active.append(rf.id)
                 cache.set("processing_files", active)
 
-            # Start Celery background task
-            process_file_task.delay(rf.id)
-            log.info("Started Celery task for RawFile id=%s", rf.id)
-
+            transaction.on_commit(lambda: process_file_task.delay((rf.id)))
+            log.info("Scheduled Celery task for RawFile id=%s", rf.id)
 
         # Save to session
+        request.session["uploaded_files"] = uploaded_files
         request.session["processing_files"] = processing_ids
 
         return redirect("ingestion:upload_success") if not errors else render(
