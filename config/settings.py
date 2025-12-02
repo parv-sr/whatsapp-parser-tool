@@ -40,6 +40,8 @@ ALLOWED_HOSTS = [
 
 # Application definition
 
+#varun
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
