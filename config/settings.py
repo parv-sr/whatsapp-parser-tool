@@ -31,7 +31,9 @@ SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 DEBUG = os.getenv("DEBUG")
 
 ALLOWED_HOSTS = [
-    'whatsapp-parser-tool.onrender.com', 
+    'whatsapp-parser-tool.onrender.com',
+    'bandrahomes.in',
+    'www.bandrahomes.in', 
     'localhost', 
     '127.0.0.1'
 ]
