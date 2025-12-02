@@ -1,6 +1,7 @@
 import re
 import hashlib
 import logging
+import os
 from rapidfuzz import fuzz
 from datetime import datetime
 from django.utils import timezone
@@ -89,6 +90,19 @@ def parse_raw_chat_file(content: str):
 def process_file_in_background(raw_file_id: int):
     try:
         raw_file = RawFile.objects.get(pk=raw_file_id)
+
+        file_path = raw_file.file.path
+        log.info(f"Looking for file at: {file_path}")
+        
+        #RENDER DEBUG
+        if not os.path.exists(file_path):
+            log.error(f"CRITICAL: File missing! Directory listing of {os.path.dirname(file_path)}:")
+            try:
+                log.error(os.listdir(os.path.dirname(file_path)))
+            except Exception as e:
+                log.error(f"Could not list directory: {e}")
+            raise FileNotFoundError(f"File not found at {file_path}")
+
         raw_file.status = "PROCESSING"
         raw_file.process_started_at = timezone.now()
         raw_file.save()
