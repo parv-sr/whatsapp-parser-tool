@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% load tz %}
+
 {% block title %}All Uploads{% endblock %}
 
 {% block content %}
@@ -59,6 +61,7 @@
         color: white;
         border-bottom: 1px solid rgba(255,255,255,0.06);
         transition: background 0.3s ease;
+        vertical-align: middle;
     }
 
     tr:hover td {
@@ -88,16 +91,21 @@
     .badge-completed  { background: rgba(74, 222, 128, 0.2);  color: #86efac; border: 1px solid rgba(74, 222, 128, 0.4); box-shadow: 0 0 20px rgba(74, 222, 128, 0.4); }
     .badge-failed     { background: rgba(248, 113, 113, 0.2); color: #fca5a5; border: 1px solid rgba(248, 113, 113, 0.4); }
 
-    /* Perfect Progress Bar (Works Everywhere) */
+    /* Progress Wrapper */
+    .progress-cell {
+        min-width: 200px;
+    }
+
     .progress-container {
         display: flex;
         align-items: center;
         gap: 10px;
+        margin-bottom: 4px;
     }
 
     .progress-bar {
         height: 8px;
-        width: 120px;
+        flex-grow: 1;
         background: rgba(255,255,255,0.1);
         border-radius: 6px;
         overflow: hidden;
@@ -113,10 +121,39 @@
         box-shadow: 0 0 15px rgba(0, 212, 255, 0.6);
     }
 
+    /* Animated Stripes for "Active" feel */
+    .progress-striped {
+        background-image: linear-gradient(
+            45deg,
+            rgba(255, 255, 255, 0.15) 25%,
+            transparent 25%,
+            transparent 50%,
+            rgba(255, 255, 255, 0.15) 50%,
+            rgba(255, 255, 255, 0.15) 75%,
+            transparent 75%,
+            transparent
+        );
+        background-size: 1rem 1rem;
+        animation: progress-bar-stripes 1s linear infinite;
+    }
+
+    @keyframes progress-bar-stripes {
+        0% { background-position: 1rem 0; }
+        100% { background-position: 0 0; }
+    }
+
     .progress-text {
         font-size: 0.85rem;
-        color: rgba(255,255,255,0.7);
-        min-width: 50px;
+        color: rgba(255,255,255,0.9);
+        font-weight: 600;
+        min-width: 35px;
+        text-align: right;
+    }
+
+    .eta-text {
+        font-size: 0.75rem;
+        color: rgba(255,255,255,0.5);
+        margin-left: 2px;
     }
 
     /* Completed check */
@@ -124,6 +161,9 @@
         color: #86efac;
         font-weight: bold;
         font-size: 1.1rem;
+        display: flex;
+        align-items: center;
+        gap: 6px;
     }
 </style>
 
@@ -137,8 +177,8 @@
                 <tr>
                     <th>File Name</th>
                     <th>Status</th>
-                    <th>Uploaded</th>
-                    <th>Progress</th>
+                    <th>Uploaded (IST)</th>
+                    <th style="width: 35%;">Progress</th>
                 </tr>
             </thead>
             <tbody>
@@ -156,17 +196,20 @@
                     </td>
 
                     <td style="color: rgba(255,255,255,0.6); font-size: 0.9rem;">
-                        {{ file.uploaded_at|date:"d M Y" }}<br>
-                        <small>{{ file.uploaded_at|time:"H:i" }}</small>
+                        {{ file.uploaded_at|timezone:"Asia/Kolkata"|date:"d M Y" }}<br>
+                        <small>{{ file.uploaded_at|timezone:"Asia/Kolkata"|time:"h:i A" }}</small>
                     </td>
 
-                    <td>
+                    <td class="progress-cell">
                         {% if file.status == "PROCESSING" %}
-                            <div class="progress-container">
-                                <div class="progress-bar">
-                                    <div id="fill-{{ file.id }}" class="progress-fill" style="width: 0%"></div>
+                            <div id="wrapper-{{ file.id }}">
+                                <div class="progress-container">
+                                    <div class="progress-bar">
+                                        <div id="fill-{{ file.id }}" class="progress-fill progress-striped" style="width: 0%"></div>
+                                    </div>
+                                    <span id="text-{{ file.id }}" class="progress-text">0%</span>
                                 </div>
-                                <span id="text-{{ file.id }}" class="progress-text">0%</span>
+                                <div id="eta-{{ file.id }}" class="eta-text">Calculating time...</div>
                             </div>
                         {% elif file.status == "COMPLETED" %}
                             <span class="completed-check">✔ Completed</span>
@@ -192,12 +235,15 @@
 <script>
     // Smart polling controller
     let pollingInterval = null;
+    
+    // Track ETA state per file
+    // { fileId: { startProgress: number, startTime: number, lastProgress: number } }
+    const etaState = {}; 
 
     function startPolling() {
         if (pollingInterval) return;
-
-        pollingInterval = setInterval(updateProgress, 1800);
-        updateProgress(); // immediate first call
+        pollingInterval = setInterval(updateProgress, 2000); // 2s poll
+        updateProgress();
     }
 
     function stopPolling() {
@@ -205,6 +251,13 @@
             clearInterval(pollingInterval);
             pollingInterval = null;
         }
+    }
+
+    function formatEta(seconds) {
+        if (!isFinite(seconds) || seconds < 0) return "Calculating...";
+        if (seconds < 60) return "< 1 min remaining";
+        const mins = Math.ceil(seconds / 60);
+        return `~${mins} min remaining`;
     }
 
     async function updateProgress() {
@@ -220,29 +273,67 @@
             }
 
             let hasProcessing = false;
+            const now = Date.now();
 
             data.files.forEach(f => {
                 const fill = document.getElementById("fill-" + f.id);
                 const text = document.getElementById("text-" + f.id);
                 const badge = document.getElementById("badge-" + f.id);
+                const etaLabel = document.getElementById("eta-" + f.id);
+                const wrapper = document.getElementById("wrapper-" + f.id);
 
                 if (fill && text) {
+                    // Update width & text
                     fill.style.width = f.progress + "%";
-                    text.textContent = f.progress >= 100 ? "Done!" : f.progress + "%";
+                    text.textContent = f.progress >= 100 ? "100%" : f.progress + "%";
 
+                    // Handle Completion
                     if (f.progress >= 100) {
-                        badge.className = "badge badge-completed";
-                        badge.textContent = "Completed";
-                        text.style.color = "#86efac";
-                    }
+                        if (badge) {
+                            badge.className = "badge badge-completed";
+                            badge.textContent = "Completed";
+                        }
+                        if (wrapper && !wrapper.classList.contains('done-state')) {
+                            // Replace progress bar with checkmark
+                            wrapper.innerHTML = '<span class="completed-check">✔ Completed</span>';
+                            wrapper.classList.add('done-state');
+                        }
+                    } else {
+                        hasProcessing = true;
+                        
+                        // --- ETA CALCULATION ---
+                        // Initialize state if new
+                        if (!etaState[f.id]) {
+                            etaState[f.id] = {
+                                startTime: now,
+                                startProgress: f.progress
+                            };
+                        }
 
-                    if (f.progress < 100) hasProcessing = true;
+                        const state = etaState[f.id];
+                        const progressDelta = f.progress - state.startProgress;
+                        const timeDeltaSec = (now - state.startTime) / 1000;
+
+                        // Only calc if we've made some progress and time passed
+                        if (progressDelta > 0 && timeDeltaSec > 5) {
+                            const speed = progressDelta / timeDeltaSec; // % per second
+                            const remainingPercent = 100 - f.progress;
+                            const etaSeconds = remainingPercent / speed;
+                            
+                            if (etaLabel) {
+                                etaLabel.textContent = formatEta(etaSeconds);
+                            }
+                        } else if (etaLabel && f.progress === 0) {
+                            etaLabel.textContent = "Starting...";
+                        }
+                    }
                 }
             });
 
             if (!hasProcessing) {
                 stopPolling();
-                setTimeout(() => location.reload(), 3000); // refresh when all done
+                // Optional: reload to ensure table sort/dates are perfect
+                // setTimeout(() => location.reload(), 2000); 
             }
 
             if (hasProcessing && !pollingInterval) {
@@ -253,24 +344,15 @@
         }
     }
 
-    // Auto-start polling only if there's at least one processing file
+    // Auto-start polling if we see any processing badge on load
     if (document.querySelector(".badge-processing")) {
         startPolling();
     }
 </script>
 
-<!-- Optional: Confetti when all done -->
 <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.2/dist/confetti.browser.min.js"></script>
 <script>
-    const originalReload = location.reload;
-    location.reload = function() {
-        confetti({
-            particleCount: 150,
-            spread: 70,
-            origin: { y: 0.6 }  
-        });
-        setTimeout(originalReload, 800);
-    };
+    // Hook into reload only if needed, or trigger manually
 </script>
 
 {% endblock %}

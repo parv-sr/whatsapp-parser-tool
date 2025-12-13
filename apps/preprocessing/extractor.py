@@ -47,6 +47,17 @@ class ExtractionResult(BaseModel):
     listings: List[PropertyListing] = Field(default_factory=list, description="List of properties found in the message.")
     is_irrelevant: bool = Field(False, description="Set to True if the message is just conversation, admin alerts, or spam.")
 
+class BatchItemResult(BaseModel):
+    """
+    Holds the extraction result for a single message within a batch.
+    """
+    message_index: int = Field(..., description="The index ID of the message provided in the prompt.")
+    listings: List[PropertyListing] = Field(default_factory=list)
+    is_irrelevant: bool = Field(False)
+
+class BatchExtractionResult(BaseModel):
+    results: List[BatchItemResult]
+
 # --- Main Extraction Function ---
 
 def extract_listings_from_text(message_text: str) -> List[PropertyListing]:
@@ -88,4 +99,44 @@ def extract_listings_from_text(message_text: str) -> List[PropertyListing]:
 
     except Exception as e:
         log.error(f"LLM Extraction failed: {e}")
+        return []
+
+
+def extract_listings_from_batch(messages: List[str]) -> List[BatchItemResult]:
+    """
+    Batch processes a list of raw message strings.
+    Returns a list of results corresponding to the input order.
+    """
+    if not messages:
+        return []
+
+    # 1. Construct a prompt that clearly separates messages
+    user_content = "Extract listings from the following messages. Return the output keyed by the Message ID provided.\n\n"
+    for idx, msg in enumerate(messages):
+        user_content += f"--- MESSAGE ID {idx} ---\n{msg}\n\n"
+
+    try:
+        completion = client.beta.chat.completions.parse(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert real estate parser. "
+                        "You will receive a batch of messages, each marked with a 'MESSAGE ID'. "
+                        "For each message, extract property listings structured exactly as defined. "
+                        "Return a list of results, ensuring the 'message_index' matches the provided ID."
+                    )
+                },
+                {"role": "user", "content": user_content},
+            ],
+            response_format=BatchExtractionResult,
+            temperature=0.0,
+        )
+        
+        parsed = completion.choices[0].message.parsed
+        return parsed.results if parsed else []
+
+    except Exception as e:
+        log.error(f"Batch extraction failed: {e}")
         return []
