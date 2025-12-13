@@ -1,4 +1,5 @@
 from celery import shared_task
+from django.db import close_old_connections
 from .pipeline import process_file_in_background
 import logging
 from .models import RawFile
@@ -7,6 +8,7 @@ log = logging.getLogger(__name__)
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
 def process_file_task(self, file_id):
+    close_old_connections()
     try:
         # Optional: Quick check to ensure DB is ready
         if not RawFile.objects.filter(pk=file_id).exists():
@@ -19,3 +21,5 @@ def process_file_task(self, file_id):
     except Exception as e:
         log.exception(f"Celery task failed for file_id={file_id}: {e}")
         raise
+    finally:
+        close_old_connections()

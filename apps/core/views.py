@@ -78,7 +78,7 @@ def _fetch_top_k_by_vector(vec: List[float], top_k: int = 5) -> List[Dict[str, A
     """
     Returns a list of dicts: {embedding_id, listing_chunk_id, distance}
     Performs similarity search on preprocessing_embeddingrecord.
-    Assumes your table is named 'preprocessing_embeddingrecord' and column 'embedding_vector_v'.
+    Assumes your table is named 'preprocessing_embeddingrecord' and column 'embedding_vector'.
     """
     if not vec:
         return []
@@ -86,9 +86,9 @@ def _fetch_top_k_by_vector(vec: List[float], top_k: int = 5) -> List[Dict[str, A
     vector_literal = _vector_to_pg_literal(vec)
     # Raw SQL: use the <-> operator for pgvector distance (Euclidean/inner product depending on index)
     sql = f"""
-        SELECT id, listing_chunk_id, embedding_vector_v <-> {vector_literal} AS distance
+        SELECT id, listing_chunk_id, embedding_vector <-> {vector_literal} AS distance
         FROM preprocessing_embeddingrecord
-        WHERE embedding_vector_v IS NOT NULL
+        WHERE embedding_vector IS NOT NULL
         ORDER BY distance
         LIMIT %s
     """
