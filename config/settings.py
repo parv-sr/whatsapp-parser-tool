@@ -133,6 +133,13 @@ CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_BROKER_USE_SSL = False
 CELERY_REDIS_BACKEND_USE_SSL = False
 
+ELERY_WORKER_CONCURRENCY = 2
+# Prevent worker from prefetching too many tasks (fair distribution)
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+# Disable result backend to save Redis Ops (critical for 10k daily limit)
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_TASK_STORE_ERRORS_EVEN_IF_IGNORED = True
+
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",

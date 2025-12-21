@@ -141,6 +141,32 @@ def _build_rag_prompt(query: str, contexts: List[Dict[str, Any]]) -> List[Dict[s
         {"role": "user", "content": user_message}
     ]
 
+@login_required
+def get_listing_source(request, pk: int):
+    """
+    API to fetch the original raw message text for a specific ListingChunk.
+    Used for the 'View Source' feature in the chat.
+    """
+    try:
+        listing = ListingChunk.objects.get(pk=pk)
+        
+        # Follow the relationship to the raw chunk
+        if not listing.raw_chunk:
+            return JsonResponse({"error": "No source file linked to this listing."}, status=404)
+            
+        return JsonResponse({
+            "id": listing.id,
+            "raw_text": listing.raw_chunk.raw_text,
+            "sender": listing.raw_chunk.sender or "Unknown",
+            "timestamp": listing.raw_chunk.message_start.isoformat() if listing.raw_chunk.message_start else None
+        })
+    except ListingChunk.DoesNotExist:
+        return JsonResponse({"error": "Listing not found."}, status=404)
+    except Exception as e:
+        log.exception("Error fetching source for listing %s", pk)
+        return JsonResponse({"error": "Internal server error"}, status=500)
+
+
 @csrf_exempt
 def chat_query(request: HttpRequest):
     """

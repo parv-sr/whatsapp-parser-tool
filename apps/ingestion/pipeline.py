@@ -2,12 +2,13 @@ import re
 import hashlib
 import logging
 import os
+import io
 from datetime import datetime
 from django.utils import timezone
 from django.db import connection
 from django.db import transaction
 from django.core.cache import cache
-from pgvector.django import CosineDistance  # kept for potential ORM use / compatibility
+from pgvector.django import CosineDistance 
 
 # Models
 from apps.ingestion.models import RawFile, RawMessageChunk
@@ -18,17 +19,20 @@ from apps.preprocessing.models import ListingChunk, EmbeddingRecord
 # Extractor
 from apps.preprocessing.extractor import extract_listings_from_batch
 
-# Vectoriser (Handling the import safely)
+# Vectoriser
 try:
     from apps.embeddings.vectoriser import get_batch_embeddings
 except ImportError:
-    get_batch_embeddings = None  # safe fallback
+    get_batch_embeddings = None
 
 log = logging.getLogger(__name__)
 
 # --- Configurable constants ---
-BATCH_SIZE = 7  # conservative
-EMBEDDING_DB_FIELD = "embedding_vector"  # change here if your model uses a different column
+# Increased to 1000 to minimize Redis commands (10k limit on Upstash)
+BATCH_SIZE = 1000 
+# Chunk size for sending to LLM (still 50 to avoid HTTP timeouts/large payloads)
+LLM_BATCH_SIZE = 12
+EMBEDDING_DB_FIELD = "embedding_vector"
 VECTOR_DEDUPE_DISTANCE_THRESHOLD = 0.05
 
 # --- 1. Strict WhatsApp Splitting Regex ---
@@ -42,24 +46,9 @@ KEYWORDS_RE = re.compile(r"(bhk|rent|sale|lease|price|cr\b|lacs?|sqft|carpet|fur
 JUNK_RE = re.compile(r"(security code changed|waiting for this message|message was deleted|encrypted|joined|left|added|null|media omitted)", re.IGNORECASE)
 
 
-# --- Debug helper: rough token estimation ---
-try:
-    import tiktoken
-    _enc = tiktoken.get_encoding("cl100k_base")
-    def count_tokens(text):
-        return len(_enc.encode(text or ""))
-except Exception:
-    def count_tokens(text):
-        return len((text or "").split())
-
-
-
-
 def _generate_dedupe_hash(cleaned_text: str, sender: str) -> str:
     """
     Deterministic hash for deduplication.
-    Note: date intentionally omitted to catch reposts across days.
-    Include a few normalized fields to reduce accidental collisions.
     """
     norm_text = re.sub(r"\s+", "", (cleaned_text or "")).lower()
     norm_sender = re.sub(r"\s+", "", (sender or "")).lower()
@@ -67,81 +56,92 @@ def _generate_dedupe_hash(cleaned_text: str, sender: str) -> str:
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
-def chunk_list(data, chunk_size):
-    for i in range(0, len(data), chunk_size):
-        yield data[i:i + chunk_size]
-
-
-def parse_raw_chat_file(content: str):
-    """
-    Splits content by timestamp headers.
-    """
-    messages = []
-    current_msg = None
-
-    # Normalize newlines to avoid platform issues
-    lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-
-    for line in lines:
-        match = MSG_START_RE.match(line)
-        if match:
-            if current_msg:
-                messages.append(current_msg)
-
-            raw_date, raw_time = match.group("date"), match.group("time")
-            sender = match.group("sender").strip()
-            text_body = line[match.end():].strip()
-
-            # Parse Timestamp
-            dt = None
-            try:
-                # heuristics on year / seconds
-                if len(raw_date.split("/")[-1]) == 2:
-                    # two-digit year
-                    fmt_base = "%d/%m/%y, %I:%M:%S %p"
-                else:
-                    fmt_base = "%d/%m/%Y, %I:%M:%S %p"
-
-                # remove :%S if seconds aren't present
-                if len(raw_time.split(":")) == 2:
-                    fmt = fmt_base.replace(":%S", "")
-                else:
-                    fmt = fmt_base
-
-                ts_str = f"{raw_date}, {raw_time}"
-                dt = datetime.strptime(ts_str, fmt)
-            except Exception:
-                dt = None
-
-            current_msg = {"timestamp": dt, "sender": sender, "text": text_body}
-        else:
-            if current_msg:
-                current_msg["text"] += "\n" + line
-
-    if current_msg:
-        messages.append(current_msg)
-    return messages
-
-
-# --- Helper to produce pgvector literal used in raw SQL queries (keeps formatting consistent) ---
 def _vector_to_pg_literal(vec):
     inner = ",".join(f"{float(x):.6f}" for x in vec)
     return f"'[{inner}]'::vector"
 
 
-# --- Main Processing Logic ---
+def stream_chat_messages(file_obj):
+    """
+    Generator that reads a file line-by-line and yields structured messages.
+    Does NOT load the whole file into memory.
+    """
+    buffer = []
+    current_match = None
+
+    for line in file_obj:
+        # Decode if bytes
+        if isinstance(line, bytes):
+            line = line.decode('utf-8', errors='replace')
+        
+        # Normalize newlines
+        line = line.replace("\r\n", "\n").replace("\r", "\n")
+        
+        match = MSG_START_RE.match(line)
+        if match:
+            # Found new message start -> Yield previous message if exists
+            if current_match and buffer:
+                yield _parse_buffered_message(current_match, buffer)
+            
+            current_match = match
+            buffer = [line]
+        else:
+            # Continuation of previous message
+            if buffer:
+                buffer.append(line)
+
+    # Yield the last one
+    if current_match and buffer:
+        yield _parse_buffered_message(current_match, buffer)
+
+
+def _parse_buffered_message(match, buffer):
+    raw_date, raw_time = match.group("date"), match.group("time")
+    sender = match.group("sender").strip()
+    full_text = "".join(buffer)
+    # Body is text after the header match
+    text_body = full_text[match.end():].strip()
+
+    # Parse Timestamp
+    dt = None
+    try:
+        # heuristics on year / seconds
+        if len(raw_date.split("/")[-1]) == 2:
+            fmt_base = "%d/%m/%y, %I:%M:%S %p"
+        else:
+            fmt_base = "%d/%m/%Y, %I:%M:%S %p"
+
+        if len(raw_time.split(":")) == 2:
+            fmt = fmt_base.replace(":%S", "")
+        else:
+            fmt = fmt_base
+
+        ts_str = f"{raw_date}, {raw_time}"
+        dt = datetime.strptime(ts_str, fmt)
+    except Exception:
+        dt = None
+
+    return {"timestamp": dt, "sender": sender, "text": text_body, "raw_full": full_text}
+
+
+# --- ORCHESTRATOR: Reads Stream, Batches, Dispatches ---
 def process_file_in_background(raw_file_id: int):
+    """
+    Acts as the 'Streamer'. Reads file line-by-line, creates DB rows, 
+    and dispatches batches to Celery workers.
+    """
+    # Import here to avoid circular dependency
+    from apps.ingestion.tasks import process_batch_task
+
     try:
         raw_file = RawFile.objects.get(pk=raw_file_id)
-        tracker = DupeTracker()
-
+        
         file_path = getattr(raw_file.file, "path", None)
-        log.info("Processing RawFile id=%s path=%s", raw_file_id, file_path)
+        log.info("Processing RawFile id=%s (Streaming Mode)", raw_file_id)
 
         if not file_path or not os.path.exists(file_path):
-            log.error("File missing for RawFile id=%s path=%s", raw_file_id, file_path)
             raw_file.status = "FAILED"
-            raw_file.notes = f"File not found at {file_path}"
+            raw_file.notes = "File not found"
             raw_file.save()
             return
 
@@ -149,330 +149,258 @@ def process_file_in_background(raw_file_id: int):
         raw_file.process_started_at = timezone.now()
         raw_file.save()
 
-        cache.set(f"progress:{raw_file_id}", 5)
+        # Initialize progress
+        cache.set(f"progress:{raw_file_id}", 1)
 
-        # A. Ingestion (Read File)
-        try:
-            if hasattr(raw_file.file, "open"):
-                raw_file.file.open("rb")
-                content = raw_file.file.read().decode("utf-8", errors="replace")
-                raw_file.file.close()
-            else:
-                with open(file_path, "rb") as f:
-                    content = f.read().decode("utf-8", errors="replace")
-        except Exception as e:
-            raw_file.status = "FAILED"
-            raw_file.notes = f"Read Error: {str(e)}"
-            raw_file.save()
-            return
+        batch_buffer = []
+        total_dispatched = 0
 
-        parsed_msgs = parse_raw_chat_file(content)
-        deduper = PreLLMDedupe()
-        total_processed = 0
-        listings_created = 0
-
-        # Process in batches
-        for batch_idx, batch_msgs in enumerate(chunk_list(parsed_msgs, BATCH_SIZE)):
-
-            log.info("\n==============================")
-            log.info("Starting Batch %s", batch_idx + 1)
-            log.info("==============================")
-
-            est_tokens = sum(count_tokens(m.get("text", "")) for m in batch_msgs)
-            log.info("Batch %s contains %s messages (~%s raw tokens)",
-                    batch_idx + 1, len(batch_msgs), est_tokens)
-
-            # Phase A: Local ingestion & filtering
-            texts_to_extract = []  # list[str]
-            map_index_to_raw_chunk = {}  # index -> RawMessageChunk
-
-            for msg in batch_msgs:
-                raw_text = msg.get("text") or ""
-                if not raw_text:
+        # Open file as a stream
+        with open(file_path, "rb") as f:
+            for msg_data in stream_chat_messages(f):
+                raw_text = msg_data["text"]
+                
+                # Fast pre-filter (Gatekeeper)
+                if not raw_text or len(raw_text) < 20:
+                    continue
+                if JUNK_RE.search(raw_text) or not KEYWORDS_RE.search(raw_text):
                     continue
 
-                if len(raw_text) < 20 or JUNK_RE.search(raw_text) or not KEYWORDS_RE.search(raw_text):
-                    continue
-
-                # parse / make aware timestamp if present
-                ts = msg.get("timestamp")
-                if ts:
+                # Prepare object
+                aware_dt = None
+                if msg_data["timestamp"]:
                     try:
-                        aware_dt = timezone.make_aware(ts)
+                        aware_dt = timezone.make_aware(msg_data["timestamp"])
                     except Exception:
-                        aware_dt = None
-                else:
-                    aware_dt = None
+                        pass
 
-                # Save RawMessageChunk (we keep behaviour same)
-                raw_chunk = RawMessageChunk.objects.create(
+                obj = RawMessageChunk(
                     rawfile=raw_file,
                     message_start=aware_dt,
-                    sender=msg.get("sender"),
-                    raw_text=raw_text,
+                    sender=msg_data["sender"],
+                    raw_text=raw_text, # storing body only
                     cleaned_text=raw_text,
-                    status="PROCESSED",
+                    status="PENDING", # Mark pending for worker
                     user=getattr(raw_file, "owner", None),
                 )
+                batch_buffer.append(obj)
 
-                # pre-LLM dedupe check (cheap)
-                try:
-                    keep = deduper.should_keep(raw_text)
-                except Exception as e:
-                    log.warning("PreLLMDedupe failed unexpectedly: %s", e)
-                    keep = True
+                # Dispatch if buffer full
+                if len(batch_buffer) >= BATCH_SIZE:
+                    _dispatch_buffer(batch_buffer, process_batch_task)
+                    total_dispatched += len(batch_buffer)
+                    batch_buffer = []
+                    
+                    # Update rough progress
+                    cache.incr(f"progress:{raw_file_id}", 1)
 
-                if keep:
-                    map_index_to_raw_chunk[len(texts_to_extract)] = raw_chunk
-                    texts_to_extract.append(raw_text)
-                else:
-                    log.info("[IN-CHAT DUPE] Raw message duplicate detected (sender=%s)", msg.get("sender"))
-                    tracker.add_in_chat(raw_text)
-                    continue
+            # Flush remainder
+            if batch_buffer:
+                _dispatch_buffer(batch_buffer, process_batch_task)
+                total_dispatched += len(batch_buffer)
 
-            if not texts_to_extract:
-                continue
+        log.info("Finished streaming file %s. Dispatched %s messages.", raw_file_id, total_dispatched)
+        
+        raw_file.notes = f"Ingested {total_dispatched} messages for background processing."
+        raw_file.processed = True 
+        raw_file.save()
 
-            # Phase B: Batch Extraction (LLM) - keep single call for the batch
+    except Exception as e:
+        log.exception("Orchestrator Failed: %s", e)
+        if "raw_file" in locals():
+            raw_file.status = "FAILED"
+            raw_file.notes = str(e)
+            raw_file.save()
+
+def _dispatch_buffer(buffer_list, task_func):
+    """
+    Bulk creates RawMessageChunks and calls the worker task.
+    """
+    if not buffer_list:
+        return
+    
+    # 1. Bulk Create
+    created_objs = RawMessageChunk.objects.bulk_create(buffer_list)
+    
+    # 2. Extract IDs
+    ids = [obj.id for obj in created_objs]
+    
+    # 3. Fire & Forget Task (Pass IDs)
+    task_func.delay(ids)
+
+
+# --- WORKER: Processes a Chunk of IDs ---
+def process_raw_chunk_batch(chunk_ids):
+    """
+    Worker logic:
+    1. Reads batch of RawMessageChunks from DB
+    2. Local Dedupe (PreLLMDedupe)
+    3. Calls LLM Extraction (Batched)
+    4. DB Dedupe (Check Composite Hash)
+    5. Selective Embedding & Save
+    """
+    try:
+        # Fetch fresh data
+        chunks = RawMessageChunk.objects.filter(id__in=chunk_ids)
+        if not chunks.exists():
+            return
+
+        # Initialize Tracking Tools
+        deduper = PreLLMDedupe()
+        tracker = DupeTracker()
+
+        texts_to_extract = []
+        map_index_to_raw_chunk = {}
+
+        # 1. Local Filter & Dedupe
+        for chunk in chunks:
+            raw_text = chunk.raw_text
+            # SimHash / Exact Match Check
+            if deduper.should_keep(raw_text):
+                map_index_to_raw_chunk[len(texts_to_extract)] = chunk
+                texts_to_extract.append(raw_text)
+            else:
+                log.info("[IN-CHAT DUPE] Raw message duplicate detected (sender=%s)", chunk.sender)
+                tracker.add_in_chat(raw_text)
+                chunk.status = "DUPLICATE_LOCAL"
+                chunk.save(update_fields=["status"])
+
+        if not texts_to_extract:
+            log.info(tracker.summary())
+            return
+
+        # 2. Extraction (LLM) - Process in sub-batches of 50 to avoid timeouts
+        extraction_results = []
+        
+        # Simple sub-batching loop
+        for i in range(0, len(texts_to_extract), LLM_BATCH_SIZE):
+            sub_texts = texts_to_extract[i : i + LLM_BATCH_SIZE]
+            sub_map_start_index = i
+            
             try:
-                extraction_results = extract_listings_from_batch(texts_to_extract)
-                log.info("Extractor completed for Batch %s — received %s results",
-                batch_idx + 1, len(extraction_results))
+                batch_res = extract_listings_from_batch(sub_texts)
+                
+                # Map back to raw_chunk using offset
+                for res in batch_res:
+                    # Adjust index to global list
+                    relative_idx = getattr(res, "message_index", 0) # Assumes extractor uses relative 0-N index
+                    
+                    # Safety check
+                    # The extractor returns indices 0..49 for the sub-batch.
+                    # We map that to texts_to_extract[i + relative_idx]
+                    global_idx = sub_map_start_index + relative_idx
+                    
+                    if global_idx in map_index_to_raw_chunk:
+                        extraction_results.append({
+                            "raw_chunk": map_index_to_raw_chunk[global_idx],
+                            "result": res
+                        })
             except Exception as e:
-                log.error("Batch extraction failed on Batch %s: %s", batch_idx + 1, e)
+                log.error("LLM Sub-batch failed: %s", e)
                 continue
 
-            # Validate extractor output shape and mapping strategy
-            # If extractor returns objects with .message_index fields we use them.
-            # If not, but returns same-length list, we assume order-preserved mapping.
-            # If neither, abort this batch to avoid mis-association.
-            use_index_field = False
-            if isinstance(extraction_results, (list, tuple)) and extraction_results:
-                sample = extraction_results[0]
-                if hasattr(sample, "message_index") or (isinstance(sample, dict) and "message_index" in sample):
-                    use_index_field = True
+        # 3. Processing & Selective DB Writing
+        items_to_embed = [] # list of dicts
+        
+        for entry in extraction_results:
+            r_chunk = entry["raw_chunk"]
+            res = entry["result"]
+            
+            listings = getattr(res, "listings", [])
+            
+            # Update chunk status
+            r_chunk.split_into = len(listings)
+            r_chunk.status = "PROCESSED"
+            r_chunk.save(update_fields=["split_into", "status"])
 
-            if use_index_field:
-                # sanity check indices
-                bad_idx = False
-                for res in extraction_results:
-                    idx = getattr(res, "message_index", res.get("message_index") if isinstance(res, dict) else None)
-                    if idx is None or not isinstance(idx, int) or idx < 0 or idx >= len(texts_to_extract):
-                        log.error("Extractor returned invalid message_index=%s for batch (size=%d). Aborting batch.", idx, len(texts_to_extract))
-                        bad_idx = True
-                        break
-                if bad_idx:
-                    continue  # skip batch to avoid corruption
-            else:
-                # if extractor produced same-length results but no indices, assume positional mapping
-                if len(extraction_results) != len(texts_to_extract):
-                    log.warning(
-                        "Extractor returned %d results for %d inputs and no indices — skipping batch to avoid misalignment.",
-                        len(extraction_results), len(texts_to_extract)
-                    )
+            for item in listings:
+                # Generate Hash
+                cleaned_text = getattr(item, "cleaned_text", "")
+                sender = r_chunk.sender or ""
+                comp_hash = _generate_dedupe_hash(cleaned_text, sender)
+
+                # --- DB DEDUPE (CRITICAL FOR FREE TIER) ---
+                # Check if hash exists. If so, update last_seen and SKIP embedding/creation.
+                # This saves DB rows and Embedding API costs.
+                if ListingChunk.objects.filter(composite_hash=comp_hash).exists():
+                    ListingChunk.objects.filter(composite_hash=comp_hash).update(last_seen=timezone.now())
+                    log.info("[DB DUPE - HASH] Duplicate listing found for hash=%s...", comp_hash[:10])
+                    tracker.add_in_db(comp_hash)
                     continue
-                else:
-                    log.debug("Extractor did not return indices but result length matches inputs; mapping by position.")
+                
+                # Prepare for embedding
+                listing_type = getattr(item, "listing_type", "UNKNOWN")
+                location = getattr(item, "location", "")
+                
+                vector_text = f"{cleaned_text} | {location} | {listing_type}"
+                
+                items_to_embed.append({
+                    "raw_chunk": r_chunk,
+                    "item": item,
+                    "hash": comp_hash,
+                    "vector_text": vector_text
+                })
 
-            # Phase C: Process extraction results -> prepare items for embedding + DB writes
-            items_needing_vectors = []  # list of dicts {raw_chunk, item_data, hash, vector_text}
-            for res_idx, res in enumerate(extraction_results):
-                # resolve raw_chunk
-                if use_index_field:
-                    idx = getattr(res, "message_index", res.get("message_index") if isinstance(res, dict) else None)
-                else:
-                    idx = res_idx
+        # 4. Generate Embeddings & Save (Only for NEW unique items)
+        if items_to_embed and get_batch_embeddings:
+            # We can send all unique texts to OpenAI
+            vec_inputs = [x["vector_text"] for x in items_to_embed]
+            try:
+                vectors = get_batch_embeddings(vec_inputs)
+            except Exception:
+                vectors = []
 
-                raw_chunk = map_index_to_raw_chunk.get(idx)
-                if raw_chunk is None:
-                    log.warning("No mapped RawMessageChunk for extractor result idx=%s; skipping result.", idx)
-                    continue
-
-                # Normalize result interface: allow dataclass/object or dict
-                is_irrelevant = getattr(res, "is_irrelevant", res.get("is_irrelevant") if isinstance(res, dict) else False)
-                listings = getattr(res, "listings", res.get("listings") if isinstance(res, dict) else [])
-
-                # Update raw_chunk split count
+            for idx, data in enumerate(items_to_embed):
+                vector = vectors[idx] if idx < len(vectors) else None
+                item_data = data["item"]
+                
+                # Create Listing
                 try:
-                    raw_chunk.split_into = len(listings or [])
-                    raw_chunk.save(update_fields=["split_into"])
-                except Exception as e:
-                    log.warning("Failed to update split_into for raw_chunk %s: %s", getattr(raw_chunk, "id", None), e)
-
-                if is_irrelevant:
-                    continue
-
-                for item in listings or []:
-                    # item may be pydantic model or dict
-                    cleaned_text = getattr(item, "cleaned_text", item.get("cleaned_text") if isinstance(item, dict) else None)
-                    listing_type = getattr(item, "listing_type", item.get("listing_type") if isinstance(item, dict) else None)
-                    location = getattr(item, "location", item.get("location") if isinstance(item, dict) else None)
-
-                    composite_hash = _generate_dedupe_hash(cleaned_text or "", raw_chunk.sender or "")
-
-                    # Quick exact-hash dedupe (DB)
-                    if ListingChunk.objects.filter(composite_hash=composite_hash).exists():
-                        log.info("[DB DUPE - HASH] Duplicate listing found for hash=%s...", composite_hash[:10])
-                        tracker.add_in_db(composite_hash)
-                        ListingChunk.objects.filter(composite_hash=composite_hash).update(last_seen=timezone.now())
-                        continue
-
-
-                    # prepare vector text, avoiding "None" tokens
-                    parts = list(filter(None, [cleaned_text, location, listing_type]))
-                    vector_text = " | ".join(parts)
-
-                    items_needing_vectors.append({
-                        "raw_chunk": raw_chunk,
-                        "item_data": item,
-                        "hash": composite_hash,
-                        "vector_text": vector_text
-                    })
-
-            if not items_needing_vectors:
-                # update progress and continue
-                total_processed += len(batch_msgs)
-                if len(parsed_msgs) > 0:
-                    progress = min(95, int(((batch_idx + 1) * BATCH_SIZE / max(1, len(parsed_msgs))) * 100))
-                    cache.set(f"progress:{raw_file_id}", progress)
-                continue
-
-            # Phase D: Batch Embedding
-            vectors = []
-            if get_batch_embeddings:
-                try:
-                    vector_texts = [d["vector_text"] for d in items_needing_vectors]
-                    vectors = get_batch_embeddings(vector_texts)
-                    # safety: ensure we got a list of same length
-                    if not isinstance(vectors, (list, tuple)) or len(vectors) != len(items_needing_vectors):
-                        log.error("Embedding API returned unexpected result count: expected %d got %s. Aborting batch save to avoid mismatch.", len(items_needing_vectors), getattr(vectors, "__len__", lambda: "unknown")())
-                        continue
-                except Exception as e:
-                    log.error("Batch embedding failed: %s", e)
-                    vectors = []
-            else:
-                log.warning("Vectoriser not configured; embeddings will be skipped for this batch.")
-
-            # Phase E: Vector dedupe (using raw SQL with pgvector operator) and saving
-            for i, data in enumerate(items_needing_vectors):
-                vector = vectors[i] if i < len(vectors) else None
-                item = data["item_data"]
-                raw_chunk = data["raw_chunk"]
-
-                is_dup = False
-                if vector:
-                    try:
-                        # Use raw SQL to leverage index operator <=> (distance)
-                        vector_literal = _vector_to_pg_literal(vector)
-                        sql = f"""
-                            SELECT id, listing_chunk_id, {EMBEDDING_DB_FIELD} <=> {vector_literal} AS distance
-                            FROM preprocessing_embeddingrecord
-                            WHERE {EMBEDDING_DB_FIELD} IS NOT NULL
-                            ORDER BY distance
-                            LIMIT 1
-                        """
-                        with connection.cursor() as cur:
-                            cur.execute(sql)
-                            row = cur.fetchone()
-                        if row:
-                            nearest_id, nearest_listing_chunk_id, dist = row[0], row[1], row[2]
-                            if dist is not None and float(dist) < VECTOR_DEDUPE_DISTANCE_THRESHOLD:
-                                log.info(
-                                        "[DB DUPE - VECTOR] Duplicate found via vector similarity (dist=%.4f) -> listing_id=%s", 
-                                        float(dist), 
-                                        nearest_listing_chunk_id
-                                    )
-                                tracker.add_in_db(f"vector:{nearest_listing_chunk_id}")
-                                # mark duplicate found: update last_seen and skip creation
-                                try:
-                                    ListingChunk.objects.filter(pk=nearest_listing_chunk_id).update(last_seen=timezone.now())
-                                    is_dup = True
-                                except Exception:
-                                    log.warning("Vector dedupe: failed to update last_seen for listing %s", nearest_listing_chunk_id)
-                    except Exception as e:
-                        # Don't fail the batch - but log it
-                        log.warning("Vector dedupe SQL error: %s", e)
-
-                if is_dup:
-                    continue
-
-                # Create ListingChunk
-                try:
-                    cleaned_text = getattr(item, "cleaned_text", item.get("cleaned_text") if isinstance(item, dict) else "")
-                    listing_type = getattr(item, "listing_type", item.get("listing_type") if isinstance(item, dict) else "UNKNOWN")
-                    property_type = getattr(item, "property_type", item.get("property_type") if isinstance(item, dict) else "UNKNOWN")
-
+                    listing_type = getattr(item_data, "listing_type", "UNKNOWN")
+                    property_type = getattr(item_data, "property_type", "UNKNOWN")
+                    
                     db_intent = "UNKNOWN"
                     if listing_type == "REQUIREMENT":
                         db_intent = "REQUIREMENT"
                     elif listing_type in ("RENT", "SALE"):
                         db_intent = "LISTING"
-
+                    
                     db_cat = "LAND" if property_type == "PLOT" else (property_type or "UNKNOWN")
 
-                    listing = ListingChunk.objects.create(
-                        raw_chunk=raw_chunk,
-                        text=cleaned_text,
-                        date_seen=raw_chunk.message_start,
-                        metadata=(item.model_dump() if hasattr(item, "model_dump") else (item if isinstance(item, dict) else {})),
+                    lc = ListingChunk.objects.create(
+                        raw_chunk=data["raw_chunk"],
+                        text=getattr(item_data, "cleaned_text", ""),
+                        date_seen=data["raw_chunk"].message_start,
+                        metadata=item_data.model_dump() if hasattr(item_data, "model_dump") else {},
                         intent=db_intent,
                         category=db_cat,
-                        transaction_type=(listing_type if listing_type != "REQUIREMENT" else "UNKNOWN"),
+                        transaction_type=listing_type if listing_type != "REQUIREMENT" else "UNKNOWN",
                         composite_hash=data["hash"],
                         status="ACTIVE"
                     )
 
                     log.info("Created ListingChunk id=%s (sender=%s, hash=%s...)",
-                                listing.id,
-                                raw_chunk.sender,
+                                lc.id,
+                                data["raw_chunk"].sender,
                                 data["hash"][:8]
                     )
 
-                except Exception as e:
-                    log.error("Failed to create ListingChunk for raw_chunk %s: %s", getattr(raw_chunk, "id", None), e)
-                    continue
-
-                # Save EmbeddingRecord if vector exists
-                if vector:
-                    try:
+                    if vector:
                         EmbeddingRecord.objects.create(
-                            listing_chunk=listing,
-                            **{EMBEDDING_DB_FIELD: vector},
-                            vector_db_id=str(listing.id),
-                            vector_index_name="default",
+                            listing_chunk=lc,
+                            embedding_vector=vector, # PGVector field
+                            vector_db_id=str(lc.id),
                             embedded_at=timezone.now()
                         )
-                        log.info("   ↳ Saved embedding for listing id=%s", listing.id)
-                    except Exception as e:
-                        log.error("Failed to save EmbeddingRecord for listing %s: %s", listing.id, e)
+                        log.info("   ↳ Saved embedding for listing id=%s", lc.id)
+                    else:
+                        log.info("   ↳ Skipped embedding (no vector)")
 
-                listings_created += 1
-
-                if not vector:
-                    log.info("   ↳ Skipped embedding (no vector)")
-                
-                log.info("Finished Batch %s", batch_idx + 1)
-                log.info("--------------------------------------------------")
-
-
-            # Update progress
-            total_processed += len(batch_msgs)
-            if len(parsed_msgs) > 0:
-                progress = min(95, int(((batch_idx + 1) * BATCH_SIZE / max(1, len(parsed_msgs))) * 100))
-                cache.set(f"progress:{raw_file_id}", progress)
-
-        # Finalize
+                except Exception as e:
+                    log.error("Error saving listing: %s", e)
+        
+        # Log Dupetracker summary for this batch
         log.info(tracker.summary())
-        raw_file.status = "COMPLETED"
-        cache.set(f"progress:{raw_file_id}", 100)
-        raw_file.process_finished_at = timezone.now()
-        raw_file.notes = f"Processed {total_processed} messages. Created {listings_created} listings."
-        raw_file.processed = True
-        raw_file.save()
 
     except Exception as e:
-        log.exception("Pipeline Critical Failure for file %s: %s", raw_file_id, e)
-        if "raw_file" in locals():
-            raw_file.status = "FAILED"
-            raw_file.notes = f"Critical Error: {str(e)}"
-            raw_file.save()
+        log.exception("Worker Batch Failed: %s", e)
