@@ -91,6 +91,8 @@
         margin-right: auto;
         border-bottom-left-radius: 4px;
         border: 1px solid rgba(255, 255, 255, 0.05);
+        width: fit-content;
+        max-width: 95%; /* Allow tables to expand */
     }
 
     /* --- 5. TABLE STYLING --- */
@@ -189,11 +191,57 @@
         fill: white !important;
         margin-left: 2px;
     }
+
+    /* --- 7. SOURCE MODAL --- */
+    .source-btn {
+        background: rgba(56, 189, 248, 0.15);
+        color: #38bdf8;
+        border: 1px solid rgba(56, 189, 248, 0.3);
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 0.75rem;
+        cursor: pointer;
+        transition: all 0.2s;
+        text-decoration: none;
+        display: inline-block;
+        white-space: nowrap;
+    }
+    .source-btn:hover {
+        background: rgba(56, 189, 248, 0.3);
+        border-color: #38bdf8;
+        color: white;
+    }
+
+    dialog article {
+        background: rgba(20, 25, 35, 0.95) !important;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(20px);
+        max-width: 800px;
+        width: 100%;
+        color: white;
+    }
+    
+    dialog header {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        margin-bottom: 1rem;
+    }
+
+    .raw-msg-box {
+        background: rgba(0,0,0,0.3);
+        padding: 1rem;
+        border-radius: 8px;
+        font-family: monospace;
+        font-size: 0.85rem;
+        white-space: pre-wrap;
+        color: #a0a0a0;
+        max-height: 50vh;
+        overflow-y: auto;
+        border: 1px solid rgba(255,255,255,0.05);
+    }
 </style>
 
 <div id="chat-wrapper">
-    <div id="chat-window">
-        </div>
+    <div id="chat-window"></div>
 </div>
 
 <div id="chat-input-bar">
@@ -204,6 +252,20 @@
         </button>
     </form>
 </div>
+
+<dialog id="source-modal">
+    <article>
+        <header>
+            <button aria-label="Close" rel="prev" onclick="closeSourceModal()"></button>
+            <h3 id="modal-title">Original Message</h3>
+        </header>
+        <p style="font-size: 0.9rem; color: #888; margin-bottom: 0.5rem;">
+            Sender: <span id="modal-sender" style="color:white"></span> | 
+            Time: <span id="modal-time" style="color:white"></span>
+        </p>
+        <pre id="modal-content" class="raw-msg-box">Loading...</pre>
+    </article>
+</dialog>
 
 {{ history|json_script:"chat-history" }}
 
@@ -216,15 +278,33 @@
     const chatWindow = document.getElementById("chat-window");
     const chatForm = document.getElementById("chat-form");
     const chatInput = document.getElementById("chat-input");
+    const modal = document.getElementById("source-modal");
 
-    function loadChatHistory() {
-        const history = JSON.parse(localStorage.getItem("chatHistory") || "[]");
-        chatWindow.innerHTML = "";
-        history.forEach(msg => {
-            chatWindow.appendChild(formatMessage(msg.role, msg.text));
-        });
-        chatWindow.scrollTop = chatWindow.scrollHeight;
+    // --- Modal Functions ---
+    function closeSourceModal() {
+        modal.removeAttribute("open");
     }
+
+    async function openSourceModal(listingId) {
+        modal.setAttribute("open", true);
+        document.getElementById("modal-content").textContent = "Loading original message...";
+        document.getElementById("modal-sender").textContent = "...";
+        document.getElementById("modal-time").textContent = "...";
+
+        try {
+            const res = await fetch(`/core/chat/source/${listingId}/`);
+            if (!res.ok) throw new Error("Failed to fetch");
+            const data = await res.json();
+            
+            document.getElementById("modal-content").textContent = data.raw_text;
+            document.getElementById("modal-sender").textContent = data.sender;
+            document.getElementById("modal-time").textContent = data.timestamp || "N/A";
+        } catch (e) {
+            document.getElementById("modal-content").textContent = "Error loading source message. It may have been deleted.";
+        }
+    }
+
+    // --- Chat Functions ---
 
     function saveMessage(role, text) {
         const history = JSON.parse(localStorage.getItem("chatHistory") || "[]");
@@ -235,20 +315,58 @@
     function formatMessage(role, text) {
         const div = document.createElement("div");
         div.classList.add("msg", role === "user" ? "user-msg" : "assistant-msg");
+        
         if (role === "assistant") {
+            // Render Markdown
             div.innerHTML = marked.parse(text);
+            
+            // Post-process Tables to add "View Source" buttons
+            const tables = div.querySelectorAll("table");
+            tables.forEach(table => {
+                // Find index of "ID" column
+                let idColIndex = -1;
+                const headers = table.querySelectorAll("th");
+                headers.forEach((th, idx) => {
+                    const txt = th.textContent.trim().toLowerCase();
+                    if (txt === "id" || txt === "_id") {
+                        idColIndex = idx;
+                        th.textContent = "Source"; // Rename header
+                    }
+                });
+
+                if (idColIndex !== -1) {
+                    const rows = table.querySelectorAll("tbody tr");
+                    rows.forEach(row => {
+                        const cells = row.querySelectorAll("td");
+                        if (cells[idColIndex]) {
+                            const idVal = cells[idColIndex].textContent.trim();
+                            // Clear ID and replace with button
+                            cells[idColIndex].innerHTML = ""; 
+                            
+                            const btn = document.createElement("button");
+                            btn.className = "source-btn";
+                            btn.textContent = "View Message";
+                            btn.onclick = () => openSourceModal(idVal);
+                            
+                            cells[idColIndex].appendChild(btn);
+                        }
+                    });
+                }
+            });
+
         } else {
-            div.innerHTML = text; 
+            div.textContent = text; 
         }
         return div;
     }
 
-    //loadChatHistory();
-
+    // Load initial history
     serverHistory.forEach(msg => {
         const bubble = formatMessage(msg.role, msg.content);
         chatWindow.appendChild(bubble);
     });
+    // Scroll to bottom initially
+    chatWindow.scrollTop = chatWindow.scrollHeight;
 
     chatForm.addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -256,24 +374,28 @@
         if (!question) return;
 
         chatWindow.appendChild(formatMessage("user", question));
-        saveMessage("user", question);
+        // saveMessage("user", question); // Optional: if using local storage sync
         chatInput.value = "";
         chatWindow.scrollTop = chatWindow.scrollHeight;
 
-        const res = await fetch("/core/chat/query/", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "X-CSRFToken": "{{ csrf_token }}"
-            },
-            body: JSON.stringify({ query: question, top_k: 5 })
-        });
+        try {
+            const res = await fetch("/core/chat/query/", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-CSRFToken": "{{ csrf_token }}"
+                },
+                body: JSON.stringify({ query: question, top_k: 5 })
+            });
 
-        const data = await res.json();
-        let answer = data.answer || "⚠️ Error retrieving response.";
+            const data = await res.json();
+            let answer = data.answer || "⚠️ Error retrieving response.";
 
-        chatWindow.appendChild(formatMessage("assistant", answer));
-        saveMessage("assistant", answer);
+            chatWindow.appendChild(formatMessage("assistant", answer));
+            // saveMessage("assistant", answer); 
+        } catch (err) {
+            chatWindow.appendChild(formatMessage("assistant", "⚠️ Connection error."));
+        }
 
         chatWindow.scrollTop = chatWindow.scrollHeight;
     });

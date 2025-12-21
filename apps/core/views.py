@@ -78,7 +78,7 @@ def _fetch_top_k_by_vector(vec: List[float], top_k: int = 5) -> List[Dict[str, A
     """
     Returns a list of dicts: {embedding_id, listing_chunk_id, distance}
     Performs similarity search on preprocessing_embeddingrecord.
-    Assumes your table is named 'preprocessing_embeddingrecord' and column 'embedding_vector_v'.
+    Assumes your table is named 'preprocessing_embeddingrecord' and column 'embedding_vector'.
     """
     if not vec:
         return []
@@ -86,9 +86,9 @@ def _fetch_top_k_by_vector(vec: List[float], top_k: int = 5) -> List[Dict[str, A
     vector_literal = _vector_to_pg_literal(vec)
     # Raw SQL: use the <-> operator for pgvector distance (Euclidean/inner product depending on index)
     sql = f"""
-        SELECT id, listing_chunk_id, embedding_vector_v <-> {vector_literal} AS distance
+        SELECT id, listing_chunk_id, embedding_vector <-> {vector_literal} AS distance
         FROM preprocessing_embeddingrecord
-        WHERE embedding_vector_v IS NOT NULL
+        WHERE embedding_vector IS NOT NULL
         ORDER BY distance
         LIMIT %s
     """
@@ -140,6 +140,32 @@ def _build_rag_prompt(query: str, contexts: List[Dict[str, Any]]) -> List[Dict[s
         system,
         {"role": "user", "content": user_message}
     ]
+
+@login_required
+def get_listing_source(request, pk: int):
+    """
+    API to fetch the original raw message text for a specific ListingChunk.
+    Used for the 'View Source' feature in the chat.
+    """
+    try:
+        listing = ListingChunk.objects.get(pk=pk)
+        
+        # Follow the relationship to the raw chunk
+        if not listing.raw_chunk:
+            return JsonResponse({"error": "No source file linked to this listing."}, status=404)
+            
+        return JsonResponse({
+            "id": listing.id,
+            "raw_text": listing.raw_chunk.raw_text,
+            "sender": listing.raw_chunk.sender or "Unknown",
+            "timestamp": listing.raw_chunk.message_start.isoformat() if listing.raw_chunk.message_start else None
+        })
+    except ListingChunk.DoesNotExist:
+        return JsonResponse({"error": "Listing not found."}, status=404)
+    except Exception as e:
+        log.exception("Error fetching source for listing %s", pk)
+        return JsonResponse({"error": "Internal server error"}, status=500)
+
 
 @csrf_exempt
 def chat_query(request: HttpRequest):

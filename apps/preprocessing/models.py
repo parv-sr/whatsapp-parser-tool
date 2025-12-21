@@ -66,7 +66,7 @@ class EmbeddingRecord(models.Model):
     Small record to keep track of embedding state and pointer to vector DB id.
     """
     listing_chunk = models.OneToOneField(ListingChunk, on_delete=models.CASCADE, related_name="embedding")
-    embedding_vector = VectorField(dimensions=1536, null=True, blank=True, db_column="embedding_vector_v")
+    embedding_vector = VectorField(dimensions=1536, null=True, blank=True)
     vector_db_id = models.CharField(max_length=255, null=True, blank=True)
     vector_index_name = models.CharField(max_length=128, null=True, blank=True)
     embedded_at = models.DateTimeField(null=True, blank=True)

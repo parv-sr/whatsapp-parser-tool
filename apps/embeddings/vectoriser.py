@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Dict, Any
+from typing import Dict, Any, List
 from django.conf import settings
 from openai import OpenAI
 
@@ -36,3 +36,25 @@ def generate_embedding_and_push(text: str, metadata: Dict[str, Any], listing_id:
             time.sleep(1)
             
     raise Exception("Failed to generate embedding.")
+
+
+def get_batch_embeddings(texts: List[str]) -> List[List[float]]:
+    """
+    Generates embeddings for a list of texts in a SINGLE API call.
+    """
+    if not texts:
+        return []
+
+    # OpenAI allows batching. We just pass the list.
+    try:
+        resp = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=texts,
+            dimensions=1536
+        )
+        # Ensure we return vectors in the same order as inputs
+        sorted_data = sorted(resp.data, key=lambda x: x.index)
+        return [item.embedding for item in sorted_data]
+    except Exception as e:
+        log.error(f"Batch embedding failed: {e}")
+        return []
