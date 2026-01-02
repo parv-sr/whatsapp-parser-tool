@@ -35,9 +35,8 @@ BATCH_SIZE = 1000  # Database write batch size (unchanged)
 
 # Dynamic based on CPU cores (over-subscribe for I/O-bound work)
 NUM_CORES = multiprocessing.cpu_count()
-LLM_BATCH_SIZE = min(16, NUM_CORES * 4)  # e.g., 8 for 2 cores; larger batches for throughput
-MAX_WORKERS = NUM_CORES * 4  # e.g., 8 for 2 cores; max threads without overwhelming
-
+LLM_BATCH_SIZE = 4
+MAX_WORKERS = 4
 EMBEDDING_DB_FIELD = "embedding_vector"
 VECTOR_DEDUPE_DISTANCE_THRESHOLD = 0.05
 
@@ -163,9 +162,12 @@ def process_single_llm_batch(batch_data):
             else:
                 chunk.status = "DUPLICATE_LOCAL"
                 chunk.save(update_fields=["status"])
-                # tracker.add_in_chat(chunk.raw_text) # (Optional logging)
+                # Log to tracker and console
+                tracker.add_in_chat(chunk.raw_text) 
+                log.info(f"[IN-CHAT DUPE] Skipped duplicate message from {chunk.sender}")
 
         if not texts_to_extract:
+            log.info(tracker.summary())
             return len(chunk_ids)
 
         # 2. Extract (Async via Sync Wrapper - Handles Parallelism Internally)
@@ -208,7 +210,10 @@ def process_single_llm_batch(batch_data):
                 if existing_lc:
                     existing_lc.last_seen = timezone.now()
                     existing_lc.save(update_fields=["last_seen"])
-                    # Optionally link to raw chunk
+                    
+                    # Log DB duplicate
+                    tracker.add_in_db(composite_hash)
+                    log.info(f"[DB DUPE - HASH] Skipped existing listing {existing_lc.id} (hash={composite_hash[:8]})")
                     continue  # Skip create
 
                 # Vector prep text (for embedding)
@@ -234,6 +239,7 @@ def process_single_llm_batch(batch_data):
         if listing_buffer:
             with transaction.atomic():
                 ListingChunk.objects.bulk_create(listing_buffer, ignore_conflicts=False)
+                log.info(f"Batch {batch_idx}: Saved {len(listing_buffer)} new listings to DB.")
 
                 # 4. Embeddings (If available; batch them)
                 if get_batch_embeddings:
@@ -253,7 +259,16 @@ def process_single_llm_batch(batch_data):
 
                 # Vector Dedupe (Post-Embed; Query for similars)
                 for lc in listing_buffer:
-                    er = lc.embedding  # Assumes OneToOneField
+                    er = getattr(lc, 'embedding', None)  # Access related EmbeddingRecord safely
+                    # Note: Since we just created EmbeddingRecord manually above, the reverse relation 
+                    # might not be populated on 'lc' object instance without refresh.
+                    # We can fetch the embedding we just created if needed, 
+                    # but typically vector dedupe is done BEFORE insert or via a background job.
+                    # Here we do a quick check if we just inserted a duplicate vector.
+                    
+                    # NOTE: Re-fetching for correctness in this linear flow
+                    er = EmbeddingRecord.objects.filter(listing_chunk=lc).first()
+
                     if not er or not er.embedding_vector:
                         continue
 
@@ -273,10 +288,16 @@ def process_single_llm_batch(batch_data):
                             # Similar exists; mark as duplicate
                             lc.status = "STALE"
                             lc.save(update_fields=["status"])
-                            log.info(f"Vector dedupe: Marked {lc.id} as duplicate (dist={row[2]:.3f})")
+                            
+                            tracker.add_in_db(f"vector:{lc.id}")
+                            log.info(f"[DB DUPE - VECTOR] Marked {lc.id} as duplicate (dist={row[2]:.3f})")
 
         # Update chunk count (post-processing)
         processed_chunks = len([r for r in results if r.listings])
+        
+        # Log Summary for this batch
+        log.info(tracker.summary())
+        
         return processed_chunks  # Return actual processed, not total
 
     except Exception as e:
@@ -361,6 +382,8 @@ def process_file_in_background(raw_file_id: int):
                 objs = RawMessageChunk.objects.bulk_create(chunk_buffer)
                 all_chunk_ids.extend([o.id for o in objs])
 
+            log.info(f"Orchestrator: Streamed & buffered {len(all_chunk_ids)} messages from file {raw_file_id}")
+
         finally:
             if should_close and f:
                 f.close()
@@ -407,6 +430,7 @@ def process_file_in_background(raw_file_id: int):
         
         # Force 100%
         cache.set(f"progress:{raw_file_id}", 100)
+        log.info(f"Orchestrator: File {raw_file_id} completed. {processed_count} valid listings processed.")
 
         active = cache.get("processing_files", [])
         if raw_file_id in active:

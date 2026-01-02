@@ -6,13 +6,14 @@ from django.conf import settings
 import asyncio
 import tiktoken
 import multiprocessing
-from openai import AsyncOpenAI
+import openai
+from openai import AsyncOpenAI, OpenAI
 from pydantic import BaseModel, Field
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, after_log
 
 log = logging.getLogger(__name__)
 
 # Initialize AsyncOpenAI Client
-# Make sure OPENAI_API_KEY is set in your settings.py or .env
 client = AsyncOpenAI(api_key=getattr(settings, "OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY")))
 
 # Token encoder for GPT-4o-mini (cl100k_base)
@@ -21,67 +22,48 @@ ENCODING = tiktoken.get_encoding("cl100k_base")
 MAX_INPUT_TOKENS = 100_000  # Conservative buffer for 128K context (prompt + output)
 MAX_OUTPUT_TOKENS = 4000    # Per call; adjust based on expected listings
 
-# Dynamic concurrency based on CPU cores (over-subscribe for I/O)
+# Conservative concurrency (for Tier 1 limits: ~200K TPM, 500 RPM)
 NUM_CORES = multiprocessing.cpu_count()
-MAX_CONCURRENT_CALLS = NUM_CORES * 8  # e.g., 16 for 2 cores; tune if rate-limited
+MAX_CONCURRENT_CALLS = 2  # Low to start: ~2-4 RPM; increase to 4-8 after limit bump
+BATCH_TOKEN_LIMIT = 50_000  # Throttle if batch exceeds this (TPM safety)
 
-# --- Pydantic Schemas (The Contract) --- (Unchanged)
+# --- Pydantic Schemas (Unchanged) ---
 class PropertyListing(BaseModel):
-    """
-    Represents a single, cleaned real estate listing extracted from a message.
-    """
-    # 1. The "Cleaned Text" for Embeddings & Dedupe
-    cleaned_text: str = Field(
-        ..., 
-        description="A single, concise sentence summarizing the listing. Remove emojis, agent names, and fluff. Example: '2 BHK fully furnished flat for rent in Bandra West, price 85k.'"
-    )
-
-    # 2. Core Classification
+    cleaned_text: str = Field(..., description="A single, concise sentence summarizing the listing. Remove emojis, agent names, and fluff. Example: '2 BHK fully furnished flat for rent in Bandra West, price 85k.'")
     listing_type: Literal['RENT', 'SALE', 'REQUIREMENT', 'UNKNOWN'] = Field(..., description="Is this for rent, sale, or a requirement?")
     property_type: Literal['RESIDENTIAL', 'COMMERCIAL', 'PLOT', 'UNKNOWN'] = Field(..., description="Type of property.")
-
-    # 3. Metadata Fields (Normalized)
     location: str = Field(..., description="Specific locality (e.g., 'Pali Hill', 'BKC'). Do not include 'Mumbai'.")
     building_name: Optional[str] = Field(None, description="Name of the building, project, or society.")
-    
     bhk: Optional[float] = Field(None, description="Number of bedrooms. Use 0.5 for RK/Studio.")
     sqft: Optional[int] = Field(None, description="Carpet area in square feet.")
-    
-    # Price should be an integer (e.g., 15000000 for 1.5 Cr)
     price: Optional[int] = Field(None, description="Total price or rent in INR. Normalize '1.5 Cr' to 15000000.")
-    
     furnishing: Optional[Literal['FURNISHED', 'SEMI-FURNISHED', 'UNFURNISHED']] = Field(None)
     parking: Optional[int] = Field(None, description="Number of car parks.")
-    
     features: List[str] = Field(default_factory=list, description="Key amenities (e.g., 'Sea View', 'Balcony', 'Terrace').")
     contact_numbers: List[str] = Field(default_factory=list, description="Extracted phone numbers.")
 
-class ExtractionResult(BaseModel):
-    listings: List[PropertyListing] = Field(default_factory=list, description="List of properties found in the message.")
-    is_irrelevant: bool = Field(False, description="Set to True if the message is just conversation, admin alerts, or spam.")
-
 class BatchItemResult(BaseModel):
-    """
-    Holds the extraction result for a single message within a batch.
-    """
     message_index: int = Field(..., description="The index ID of the message provided in the prompt.")
     listings: List[PropertyListing] = Field(default_factory=list)
     is_irrelevant: bool = Field(False)
-
-class BatchExtractionResult(BaseModel):
-    results: List[BatchItemResult]
 
 # --- Token Counting Helper ---
 def count_tokens(text: str) -> int:
     return len(ENCODING.encode(text))
 
-# --- Async Single Extraction ---
+# --- Retriable Async Single Extraction ---
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=10),  # 1s, 2s, 4s, 8s backoff
+    retry=retry_if_exception_type(openai.RateLimitError),  # Only retry on 429
+    after=after_log(log, logging.WARNING, "Retrying extraction after rate limit: attempt={context.attempt_number}")
+)
 async def _async_extract_single(message_text: str, idx: int, semaphore: asyncio.Semaphore) -> BatchItemResult:
     async with semaphore:
-        # Truncate if too large (rare for single WhatsApp msg, but handles multi-listing)
+        # Truncate if too large
         tokens = count_tokens(message_text)
         if tokens > MAX_INPUT_TOKENS:
-            message_text = ENCODING.decode(ENCODING.encode(message_text)[:MAX_INPUT_TOKENS - 1000])  # Buffer for prompt
+            message_text = ENCODING.decode(ENCODING.encode(message_text)[:MAX_INPUT_TOKENS - 1000])
             log.warning(f"Truncated message {idx} from {tokens} to ~{MAX_INPUT_TOKENS} tokens")
 
         try:
@@ -101,38 +83,64 @@ async def _async_extract_single(message_text: str, idx: int, semaphore: asyncio.
                     },
                     {"role": "user", "content": f"Message ID {idx}: {message_text}"},
                 ],
-                response_format=BatchItemResult.model_json_schema(),  # Enforce per-message schema
+                response_format=BatchItemResult.model_json_schema(),
                 temperature=0.0,
                 max_tokens=MAX_OUTPUT_TOKENS,
             )
             result = completion.choices[0].message.parsed
-            if result.is_irrelevant:
-                return BatchItemResult(message_index=idx, listings=[], is_irrelevant=True)
-            return result
+            return BatchItemResult(
+                message_index=idx, 
+                listings=result.listings if hasattr(result, 'listings') else [], 
+                is_irrelevant=getattr(result, 'is_irrelevant', False)
+            )
+        except openai.QuotaExceededError as e:
+            log.error(f"Quota exceeded for message {idx}: {e}. Check billing.")
+            raise  # Don't retry quota errors
         except Exception as e:
             log.error(f"Async extraction failed for message {idx}: {e}")
             return BatchItemResult(message_index=idx, listings=[], is_irrelevant=True)
 
-# --- Main Async Batch Extraction ---
+# --- Main Async Batch Extraction (With Throttling) ---
 async def async_extract_listings_from_batch(messages: List[str]) -> List[BatchItemResult]:
-    """
-    Async batch processes a list of raw message strings in parallel.
-    Returns a list of results corresponding to the input order.
-    Handles token limits by truncating large messages.
-    """
     if not messages:
         return []
 
-    # Dynamic high concurrency: Semaphore based on CPU cores
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_CALLS)
+    # Throttle: Check total batch tokens
+    total_tokens = sum(count_tokens(msg) for msg in messages)
+    if total_tokens > BATCH_TOKEN_LIMIT:
+        log.warning(f"Batch {total_tokens} tokens > {BATCH_TOKEN_LIMIT}; splitting into smaller async sub-batches")
+        # Split into sub-batches of ~BATCH_TOKEN_LIMIT
+        sub_batches = []
+        current_sub = []
+        current_tokens = 0
+        for msg in messages:
+            msg_tokens = count_tokens(msg)
+            if current_tokens + msg_tokens > BATCH_TOKEN_LIMIT:
+                if current_sub:
+                    sub_batches.append(current_sub)
+                current_sub = [msg]
+                current_tokens = msg_tokens
+            else:
+                current_sub.append(msg)
+                current_tokens += msg_tokens
+        if current_sub:
+            sub_batches.append(current_sub)
+        
+        # Process sub-batches sequentially with pause
+        all_results = []
+        for sub_idx, sub_msgs in enumerate(sub_batches):
+            sub_results = await asyncio.gather(*[_async_extract_single(msg, sub_idx * len(messages) + i, asyncio.Semaphore(MAX_CONCURRENT_CALLS)) for i, msg in enumerate(sub_msgs)])
+            all_results.extend(sub_results)
+            if sub_idx < len(sub_batches) - 1:  # Pause between subs
+                await asyncio.sleep(2)  # 2s buffer for TPM
+        return all_results
 
-    # Create parallel tasks for each message (parallelism within batch)
+    # Normal low-concurrency parallel
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_CALLS)
     tasks = [_async_extract_single(msg, i, semaphore) for i, msg in enumerate(messages)]
-    
-    # Gather results (non-blocking)
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
-    # Handle any exceptions in results
+    # Handle exceptions
     processed_results = []
     for i, res in enumerate(results):
         if isinstance(res, Exception):
@@ -143,20 +151,10 @@ async def async_extract_listings_from_batch(messages: List[str]) -> List[BatchIt
     
     return processed_results
 
-# --- Sync Wrapper for Backward Compatibility ---
+# --- Sync Wrapper ---
 def extract_listings_from_batch(messages: List[str]) -> List[BatchItemResult]:
-    """
-    Sync wrapper: Runs the async batch via asyncio.run().
-    Use this in threaded contexts.
-    """
     if not messages:
         return []
-    
-    # Check total batch tokens (optional: split if >100K total, but per-msg truncation handles most)
-    total_tokens = sum(count_tokens(msg) for msg in messages)
-    if total_tokens > MAX_INPUT_TOKENS * len(messages):  # Rough check
-        log.warning(f"Batch total tokens {total_tokens} exceeds safe limit; processing individually")
-    
     try:
         return asyncio.run(async_extract_listings_from_batch(messages))
     except Exception as e:
