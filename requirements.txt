@@ -16,3 +16,4 @@ whitenoise              # Utility for serving static files
 pgvector                #literally pgvector
 python-magic            #idk
 uvicorn[standard]       #asgi utility
+tiktoken                #token utility for APIs
