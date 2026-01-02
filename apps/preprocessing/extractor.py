@@ -1,18 +1,31 @@
+# Updated apps/preprocessing/extractor.py
 import logging
 import os
 from typing import List, Optional, Literal
 from django.conf import settings
-from openai import OpenAI
+import asyncio
+import tiktoken
+import multiprocessing
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 
-# Initialize OpenAI Client
+# Initialize AsyncOpenAI Client
 # Make sure OPENAI_API_KEY is set in your settings.py or .env
-client = OpenAI(api_key=getattr(settings, "OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY")))
+client = AsyncOpenAI(api_key=getattr(settings, "OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY")))
 
-# --- Pydantic Schemas (The Contract) ---
+# Token encoder for GPT-4o-mini (cl100k_base)
+ENCODING = tiktoken.get_encoding("cl100k_base")
 
+MAX_INPUT_TOKENS = 100_000  # Conservative buffer for 128K context (prompt + output)
+MAX_OUTPUT_TOKENS = 4000    # Per call; adjust based on expected listings
+
+# Dynamic concurrency based on CPU cores (over-subscribe for I/O)
+NUM_CORES = multiprocessing.cpu_count()
+MAX_CONCURRENT_CALLS = NUM_CORES * 8  # e.g., 16 for 2 cores; tune if rate-limited
+
+# --- Pydantic Schemas (The Contract) --- (Unchanged)
 class PropertyListing(BaseModel):
     """
     Represents a single, cleaned real estate listing extracted from a message.
@@ -58,85 +71,94 @@ class BatchItemResult(BaseModel):
 class BatchExtractionResult(BaseModel):
     results: List[BatchItemResult]
 
-# --- Main Extraction Function ---
+# --- Token Counting Helper ---
+def count_tokens(text: str) -> int:
+    return len(ENCODING.encode(text))
 
-def extract_listings_from_text(message_text: str) -> List[PropertyListing]:
+# --- Async Single Extraction ---
+async def _async_extract_single(message_text: str, idx: int, semaphore: asyncio.Semaphore) -> BatchItemResult:
+    async with semaphore:
+        # Truncate if too large (rare for single WhatsApp msg, but handles multi-listing)
+        tokens = count_tokens(message_text)
+        if tokens > MAX_INPUT_TOKENS:
+            message_text = ENCODING.decode(ENCODING.encode(message_text)[:MAX_INPUT_TOKENS - 1000])  # Buffer for prompt
+            log.warning(f"Truncated message {idx} from {tokens} to ~{MAX_INPUT_TOKENS} tokens")
+
+        try:
+            completion = await client.beta.chat.completions.parse(
+                model="gpt-4o-mini", 
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": (
+                            "You are an expert real estate data parser for Mumbai. "
+                            "Your goal is to extract structured property listings from raw WhatsApp messages. "
+                            "1. If a message contains multiple properties, split them into distinct objects. "
+                            "2. Ignore 'forwarded' tags, timestamps, and emojis. "
+                            "3. Normalize all prices to integers (1.5 Cr -> 15000000). "
+                            "4. Generate a clean, factual summary sentence for 'cleaned_text' that captures all key details."
+                        )
+                    },
+                    {"role": "user", "content": f"Message ID {idx}: {message_text}"},
+                ],
+                response_format=BatchItemResult.model_json_schema(),  # Enforce per-message schema
+                temperature=0.0,
+                max_tokens=MAX_OUTPUT_TOKENS,
+            )
+            result = completion.choices[0].message.parsed
+            if result.is_irrelevant:
+                return BatchItemResult(message_index=idx, listings=[], is_irrelevant=True)
+            return result
+        except Exception as e:
+            log.error(f"Async extraction failed for message {idx}: {e}")
+            return BatchItemResult(message_index=idx, listings=[], is_irrelevant=True)
+
+# --- Main Async Batch Extraction ---
+async def async_extract_listings_from_batch(messages: List[str]) -> List[BatchItemResult]:
     """
-    Uses GPT-4o-mini to parse a raw WhatsApp message into structured data.
-    Handles multi-listing messages automatically.
-    """
-    # Safety check for empty/short text
-    if not message_text or len(message_text) < 10:
-        return []
-
-    try:
-        completion = client.beta.chat.completions.parse(
-            model="gpt-4o-mini", 
-            messages=[
-                {
-                    "role": "system", 
-                    "content": (
-                        "You are an expert real estate data parser for Mumbai. "
-                        "Your goal is to extract structured property listings from raw WhatsApp messages. "
-                        "1. If a message contains multiple properties, split them into distinct objects. "
-                        "2. Ignore 'forwarded' tags, timestamps, and emojis. "
-                        "3. Normalize all prices to integers (1.5 Cr -> 15000000). "
-                        "4. Generate a clean, factual summary sentence for 'cleaned_text' that captures all key details."
-                    )
-                },
-                {"role": "user", "content": message_text},
-            ],
-            response_format=ExtractionResult,
-            temperature=0.0, # Deterministic output
-        )
-
-        result = completion.choices[0].message.parsed
-
-        if result.is_irrelevant:
-            return []
-        
-        return result.listings
-
-    except Exception as e:
-        log.error(f"LLM Extraction failed: {e}")
-        return []
-
-
-def extract_listings_from_batch(messages: List[str]) -> List[BatchItemResult]:
-    """
-    Batch processes a list of raw message strings.
+    Async batch processes a list of raw message strings in parallel.
     Returns a list of results corresponding to the input order.
+    Handles token limits by truncating large messages.
     """
     if not messages:
         return []
 
-    # 1. Construct a prompt that clearly separates messages
-    user_content = "Extract listings from the following messages. Return the output keyed by the Message ID provided.\n\n"
-    for idx, msg in enumerate(messages):
-        user_content += f"--- MESSAGE ID {idx} ---\n{msg}\n\n"
+    # Dynamic high concurrency: Semaphore based on CPU cores
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_CALLS)
 
-    try:
-        completion = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an expert real estate parser. "
-                        "You will receive a batch of messages, each marked with a 'MESSAGE ID'. "
-                        "For each message, extract property listings structured exactly as defined. "
-                        "Return a list of results, ensuring the 'message_index' matches the provided ID."
-                    )
-                },
-                {"role": "user", "content": user_content},
-            ],
-            response_format=BatchExtractionResult,
-            temperature=0.0,
-        )
-        
-        parsed = completion.choices[0].message.parsed
-        return parsed.results if parsed else []
+    # Create parallel tasks for each message (parallelism within batch)
+    tasks = [_async_extract_single(msg, i, semaphore) for i, msg in enumerate(messages)]
+    
+    # Gather results (non-blocking)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Handle any exceptions in results
+    processed_results = []
+    for i, res in enumerate(results):
+        if isinstance(res, Exception):
+            log.error(f"Task failed for message {i}: {res}")
+            processed_results.append(BatchItemResult(message_index=i, listings=[], is_irrelevant=True))
+        else:
+            processed_results.append(res)
+    
+    return processed_results
 
-    except Exception as e:
-        log.error(f"Batch extraction failed: {e}")
+# --- Sync Wrapper for Backward Compatibility ---
+def extract_listings_from_batch(messages: List[str]) -> List[BatchItemResult]:
+    """
+    Sync wrapper: Runs the async batch via asyncio.run().
+    Use this in threaded contexts.
+    """
+    if not messages:
         return []
+    
+    # Check total batch tokens (optional: split if >100K total, but per-msg truncation handles most)
+    total_tokens = sum(count_tokens(msg) for msg in messages)
+    if total_tokens > MAX_INPUT_TOKENS * len(messages):  # Rough check
+        log.warning(f"Batch total tokens {total_tokens} exceeds safe limit; processing individually")
+    
+    try:
+        return asyncio.run(async_extract_listings_from_batch(messages))
+    except Exception as e:
+        log.error(f"Sync wrapper failed: {e}")
+        return [BatchItemResult(message_index=i, listings=[], is_irrelevant=True) for i in range(len(messages))]

@@ -1,9 +1,11 @@
+# Updated apps/ingestion/pipeline.py
 import re
 import hashlib
 import logging
 import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
 
 from django.utils import timezone
 from django.db import connection
@@ -17,8 +19,8 @@ from apps.ingestion.dedupe.pre_llm_dedupe import PreLLMDedupe
 from apps.ingestion.dedupe.dupe_tracker import DupeTracker
 from apps.preprocessing.models import ListingChunk, EmbeddingRecord
 
-# Extractor
-from apps.preprocessing.extractor import extract_listings_from_batch
+# Updated Extractor (now with async support)
+from apps.preprocessing.extractor import extract_listings_from_batch  # Sync wrapper
 
 # Vectoriser
 try:
@@ -28,21 +30,26 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
-# --- Configurable constants ---
-BATCH_SIZE = 1000  # Database write batch size
-LLM_BATCH_SIZE = 4 # Small batch size for LLM to ensure speed
-MAX_WORKERS = 3    # Concurrent OpenAI requests (Safe for free tiers)
+# --- Configurable constants (Dynamic for max utilization) ---
+BATCH_SIZE = 1000  # Database write batch size (unchanged)
+
+# Dynamic based on CPU cores (over-subscribe for I/O-bound work)
+NUM_CORES = multiprocessing.cpu_count()
+LLM_BATCH_SIZE = min(16, NUM_CORES * 4)  # e.g., 8 for 2 cores; larger batches for throughput
+MAX_WORKERS = NUM_CORES * 4  # e.g., 8 for 2 cores; max threads without overwhelming
 
 EMBEDDING_DB_FIELD = "embedding_vector"
 VECTOR_DEDUPE_DISTANCE_THRESHOLD = 0.05
 
-# --- 1. Strict WhatsApp Splitting Regex ---
+log.info(f"Pipeline initialized: {NUM_CORES} cores detected -> LLM_BATCH_SIZE={LLM_BATCH_SIZE}, MAX_WORKERS={MAX_WORKERS}")
+
+# --- 1. Strict WhatsApp Splitting Regex --- (Unchanged)
 MSG_START_RE = re.compile(
     r"^\[(?P<date>\d{1,2}/\d{1,2}/\d{2,4}),\s+(?P<time>\d{1,2}:\d{2}(?::\d{2})?(?:\s?[APap][Mm])?)\]\s+(?:~?\s?)(?P<sender>[^:]+):\s+",
     re.MULTILINE
 )
 
-# --- 2. Gatekeeper Regexes ---
+# --- 2. Gatekeeper Regexes --- (Unchanged)
 KEYWORDS_RE = re.compile(r"(bhk|rent|sale|lease|price|cr\b|lacs?|sqft|carpet|furnished|office|shop|flat|buy|sell|want)", re.IGNORECASE)
 JUNK_RE = re.compile(r"(security code changed|waiting for this message|message was deleted|encrypted|joined|left|added|null|media omitted)", re.IGNORECASE)
 
@@ -124,11 +131,12 @@ def _parse_buffered_message(match, buffer):
     return {"timestamp": dt, "sender": sender, "text": text_body, "raw_full": full_text}
 
 
-# --- THREAD WORKER: Processes a single batch of IDs ---
+# --- THREAD WORKER: Processes a single batch of IDs (Now with Async LLM) ---
 def process_single_llm_batch(batch_data):
     """
     Executed by ThreadPoolExecutor.
     Processes a small batch of raw texts (extraction -> dedupe -> embedding -> save).
+    Now uses async extraction via sync wrapper for seamless integration.
     """
     batch_idx, chunk_ids, raw_file_id = batch_data
     
@@ -160,118 +168,139 @@ def process_single_llm_batch(batch_data):
         if not texts_to_extract:
             return len(chunk_ids)
 
-        # 2. Extract (LLM)
+        # 2. Extract (Async via Sync Wrapper - Handles Parallelism Internally)
         try:
+            # This now runs async under the hood with high concurrency
             results = extract_listings_from_batch(texts_to_extract)
         except Exception as e:
             log.error(f"Batch {batch_idx} LLM Failed: {e}")
+            # Mark chunks as error
+            for chunk in chunks:
+                chunk.status = "ERROR"
+                chunk.save(update_fields=["status"])
             return 0
 
-        # 3. Process Results
-        items_to_embed = []
-        
+        # 3. Process Results (For each extracted listing)
+        listing_buffer = []
+        embedding_buffer = []  # If embeddings enabled
+
         for res in results:
-            # Map back to chunk (assumes order preserved or index provided)
-            idx = getattr(res, "message_index", None)
-            if idx is None: 
-                # Fallback to positional if simple list
-                # (Only safe if extract_listings_from_batch guarantees order)
-                continue 
-            
-            raw_chunk = map_idx_to_chunk.get(idx)
-            if not raw_chunk: continue
-            
-            listings = getattr(res, "listings", [])
-            raw_chunk.split_into = len(listings)
-            raw_chunk.status = "PROCESSED"
-            raw_chunk.save(update_fields=["split_into", "status"])
+            idx = res.message_index
+            chunk = map_idx_to_chunk.get(idx)
+            if not chunk:
+                continue
 
-            for item in listings:
-                cleaned = getattr(item, "cleaned_text", "")
-                comp_hash = _generate_dedupe_hash(cleaned, raw_chunk.sender or "")
-                
-                # DB Hash Check
-                if ListingChunk.objects.filter(composite_hash=comp_hash).exists():
-                    ListingChunk.objects.filter(composite_hash=comp_hash).update(last_seen=timezone.now())
-                    continue
+            chunk.status = "PROCESSED"
+            chunk.split_into = len(res.listings)
+            chunk.save(update_fields=["status", "split_into"])
 
-                vector_text = f"{cleaned} | {getattr(item, 'location', '')} | {getattr(item, 'listing_type', '')}"
-                
-                items_to_embed.append({
-                    "chunk": raw_chunk,
-                    "item": item,
-                    "hash": comp_hash,
-                    "vtext": vector_text
-                })
+            if res.is_irrelevant or not res.listings:
+                continue
 
-        # 4. Embed & Save
-        if items_to_embed and get_batch_embeddings:
-            try:
-                vectors = get_batch_embeddings([x["vtext"] for x in items_to_embed])
-            except Exception:
-                vectors = []
-            
-            for i, data in enumerate(items_to_embed):
-                vec = vectors[i] if i < len(vectors) else None
-                if vec:
-                    # Vector Dedupe
-                    vec_lit = _vector_to_pg_literal(vec)
+            for listing_data in res.listings:
+                # Prepare composite keys
+                text_for_hash = listing_data.cleaned_text
+                composite_key = f"{chunk.sender}|{listing_data.location}|{listing_data.listing_type}|{text_for_hash[:200]}"
+                composite_hash = _generate_dedupe_hash(text_for_hash, chunk.sender)
+
+                # Check hash dedupe
+                existing_lc = ListingChunk.objects.filter(composite_hash=composite_hash).first()
+                if existing_lc:
+                    existing_lc.last_seen = timezone.now()
+                    existing_lc.save(update_fields=["last_seen"])
+                    # Optionally link to raw chunk
+                    continue  # Skip create
+
+                # Vector prep text (for embedding)
+                vector_text = f"{listing_data.cleaned_text} {listing_data.location} {listing_data.listing_type}"
+
+                # Create ListingChunk
+                lc = ListingChunk(
+                    raw_chunk=chunk,
+                    text=vector_text,
+                    date_seen=chunk.message_start,
+                    composite_key=composite_key,
+                    composite_hash=composite_hash,
+                    metadata=listing_data.model_dump(exclude={"cleaned_text"}),  # Exclude text (stored separately)
+                    intent="LISTING" if listing_data.listing_type in ["RENT", "SALE"] else "REQUIREMENT",
+                    category=listing_data.property_type,
+                    transaction_type=listing_data.listing_type,
+                    confidence=0.9,  # Default; could use LLM confidence if added
+                    status="ACTIVE"
+                )
+                listing_buffer.append(lc)
+
+        # Bulk create listings
+        if listing_buffer:
+            with transaction.atomic():
+                ListingChunk.objects.bulk_create(listing_buffer, ignore_conflicts=False)
+
+                # 4. Embeddings (If available; batch them)
+                if get_batch_embeddings:
+                    unique_texts = [lc.text for lc in listing_buffer]
                     try:
-                        with connection.cursor() as cur:
-                            cur.execute(f"SELECT id FROM preprocessing_embeddingrecord WHERE {EMBEDDING_DB_FIELD} <=> {vec_lit} < {VECTOR_DEDUPE_DISTANCE_THRESHOLD} LIMIT 1")
-                            if cur.fetchone():
-                                # Mark duplicated
-                                continue
-                    except Exception:
-                        pass # Ignore vector db error
+                        embeddings = get_batch_embeddings(unique_texts)
+                        for i, (lc, vec) in enumerate(zip(listing_buffer, embeddings)):
+                            if vec:
+                                EmbeddingRecord.objects.create(
+                                    listing_chunk=lc,
+                                    embedding_vector=vec,
+                                    vector_db_id=str(lc.id),
+                                    embedded_at=timezone.now()
+                                )
+                    except Exception as e:
+                        log.error(f"Batch embedding failed: {e}")
 
-                # Create Listing
-                item = data["item"]
-                try:
-                    lc = ListingChunk.objects.create(
-                        raw_chunk=data["chunk"],
-                        text=getattr(item, "cleaned_text", ""),
-                        date_seen=data["chunk"].message_start,
-                        metadata=item.model_dump() if hasattr(item, "model_dump") else {},
-                        intent=getattr(item, "listing_type", "UNKNOWN"),
-                        category=getattr(item, "property_type", "UNKNOWN"),
-                        transaction_type=getattr(item, "listing_type", "UNKNOWN"),
-                        composite_hash=data["hash"],
-                        status="ACTIVE"
-                    )
+                # Vector Dedupe (Post-Embed; Query for similars)
+                for lc in listing_buffer:
+                    er = lc.embedding  # Assumes OneToOneField
+                    if not er or not er.embedding_vector:
+                        continue
 
-                    if vec:
-                        EmbeddingRecord.objects.create(
-                            listing_chunk=lc,
-                            embedding_vector=vec,
-                            vector_db_id=str(lc.id),
-                            embedded_at=timezone.now()
-                        )
-                except Exception as e:
-                    log.error(f"Error saving listing: {e}")
+                    # Raw SQL for cosine similarity check
+                    vec_literal = _vector_to_pg_literal(er.embedding_vector)
+                    sql = f"""
+                        SELECT id, listing_chunk_id, {vec_literal} <=> embedding_vector AS distance
+                        FROM preprocessing_embeddingrecord
+                        WHERE embedding_vector IS NOT NULL AND id != %s
+                        ORDER BY distance
+                        LIMIT 1
+                    """
+                    with connection.cursor() as cur:
+                        cur.execute(sql, [er.id])
+                        row = cur.fetchone()
+                        if row and row[2] < VECTOR_DEDUPE_DISTANCE_THRESHOLD:
+                            # Similar exists; mark as duplicate
+                            lc.status = "STALE"
+                            lc.save(update_fields=["status"])
+                            log.info(f"Vector dedupe: Marked {lc.id} as duplicate (dist={row[2]:.3f})")
 
-        return len(chunk_ids)
+        # Update chunk count (post-processing)
+        processed_chunks = len([r for r in results if r.listings])
+        return processed_chunks  # Return actual processed, not total
 
     except Exception as e:
         log.error(f"Thread worker failed: {e}")
+        # Mark all as error
+        RawMessageChunk.objects.filter(id__in=chunk_ids).update(status="ERROR")
         return 0
     finally:
         # Ensure connection is clean
         connection.close()
 
 
-# --- ORCHESTRATOR ---
+# --- ORCHESTRATOR --- (Minor tweaks for higher throughput)
 def process_file_in_background(raw_file_id: int):
     """
     1. Streams file -> Creates DB Chunks (Bulk)
-    2. Spawns Threads -> Processes Chunks in parallel
+    2. Spawns Threads -> Processes Chunks in parallel (Now with async inside)
     3. Updates Status -> COMPLETED
     """
     try:
         raw_file = RawFile.objects.get(pk=raw_file_id)
         
         file_path = getattr(raw_file.file, "path", None)
-        log.info("Processing RawFile id=%s (Threaded Mode)", raw_file_id)
+        log.info("Processing RawFile id=%s (Async-Threaded Mode, max_workers=%d)", raw_file_id, MAX_WORKERS)
 
         if not file_path or not os.path.exists(file_path):
             raw_file.status = "FAILED"
@@ -285,7 +314,7 @@ def process_file_in_background(raw_file_id: int):
 
         cache.set(f"progress:{raw_file_id}", 1)
 
-        # --- STEP 1: STREAM & BUFFER TO DB ---
+        # --- STEP 1: STREAM & BUFFER TO DB --- (Unchanged)
         chunk_buffer = []
         all_chunk_ids = []
         
@@ -336,7 +365,7 @@ def process_file_in_background(raw_file_id: int):
             if should_close and f:
                 f.close()
 
-        # --- STEP 2: THREADED PROCESSING ---
+        # --- STEP 2: THREADED PROCESSING (Dynamic Workers, Larger Batches) ---
         total_msgs = len(all_chunk_ids)
         if total_msgs == 0:
             raw_file.status = "COMPLETED"
@@ -348,11 +377,11 @@ def process_file_in_background(raw_file_id: int):
         llm_batches = []
         for i in range(0, total_msgs, LLM_BATCH_SIZE):
             batch_ids = all_chunk_ids[i : i + LLM_BATCH_SIZE]
-            llm_batches.append((i, batch_ids, raw_file_id))
+            llm_batches.append((i // LLM_BATCH_SIZE, batch_ids, raw_file_id))  # Batch index
 
         processed_count = 0
         
-        # Parallel Execution
+        # Parallel Execution (Dynamic max workers for compute utilization)
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             # Submit all
             future_map = {executor.submit(process_single_llm_batch, b): b for b in llm_batches}
@@ -368,7 +397,7 @@ def process_file_in_background(raw_file_id: int):
                     cache.set(f"progress:{raw_file_id}", prog)
 
        
-        # --- STEP 3: FINALIZE ---
+        # --- STEP 3: FINALIZE --- (Unchanged)
         # If we reach here, threads are done.
         raw_file.status = "COMPLETED"
         raw_file.process_finished_at = timezone.now()
