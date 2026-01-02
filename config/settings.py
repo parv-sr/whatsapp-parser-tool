@@ -86,7 +86,7 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # --- DATABASE CONFIGURATION ---
 # Uses Environment variables if available (Prod), falls back to localhost defaults (Dev)
 
-
+"""
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -100,9 +100,9 @@ DATABASES = {
         'DISABLE_SERVER_SIDE_CURSORS': True,
     }
 }
-
-
 """
+
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -113,7 +113,7 @@ DATABASES = {
         'PORT': '5432',
     }
 }
-"""
+
 
 
 # Add SSL options only if we are in Production/Remote DB context
@@ -134,7 +134,7 @@ CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_BROKER_USE_SSL = False
 CELERY_REDIS_BACKEND_USE_SSL = False
 
-ELERY_WORKER_CONCURRENCY = 2
+CELERY_WORKER_CONCURRENCY = 16
 # Prevent worker from prefetching too many tasks (fair distribution)
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 # Disable result backend to save Redis Ops (critical for 10k daily limit)

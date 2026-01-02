@@ -109,14 +109,39 @@ def upload_files(request):
 
 @login_required
 def progress_status(request):
+    """
+    Robust status check:
+    1. Gets list of 'active' file IDs from cache.
+    2. Queries DB for their REAL status (source of truth).
+    3. Returns merged data (DB status + Cache progress).
+    """
     processing_files = cache.get("processing_files", [])
-    result = []
+    
+    # If cache is empty, we return empty. 
+    # NOTE: This implies 'active' files. Completed ones drop off this list eventually 
+    # in a real app, but for now we keep them to show the "Completed" checkmark.
+    if not processing_files:
+        return JsonResponse({"files": []})
 
-    for file_id in processing_files:
-        progress = cache.get(f"progress:{file_id}", 0)
+    # Fetch from DB to catch FAILED/COMPLETED states that cache might miss
+    files_qs = RawFile.objects.filter(pk__in=processing_files)
+    
+    result = []
+    for f in files_qs:
+        # Default progress
+        prog = cache.get(f"progress:{f.id}", 0)
+        
+        # Override progress based on definitive DB status
+        if f.status == "COMPLETED":
+            prog = 100
+        elif f.status == "FAILED":
+            prog = 0 # Irrelevant, but keeps data clean
+            
         result.append({
-            "id": file_id,
-            "progress": progress
+            "id": f.id,
+            "progress": prog,
+            "status": f.status, # Critical: Frontend uses this to switch UI
+            "error": f.notes if f.status == "FAILED" else None
         })
 
     return JsonResponse({"files": result})
