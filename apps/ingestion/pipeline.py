@@ -81,8 +81,8 @@ def stream_chat_messages(file_obj):
         if isinstance(line, bytes):
             line = line.decode('utf-8', errors='replace')
         
-        # Normalize newlines
-        line = line.replace("\r\n", "\n").replace("\r", "\n")
+        # Normalize newlines and remove NUL
+        line = line.replace("\r\n", "\n").replace("\r", "\n").replace("\0", "")  # Clean NUL
         
         match = MSG_START_RE.match(line)
         if match:
@@ -106,12 +106,11 @@ def _parse_buffered_message(match, buffer):
     raw_date, raw_time = match.group("date"), match.group("time")
     sender = match.group("sender").strip()
     full_text = "".join(buffer)
-    text_body = full_text[match.end():].strip()
+    text_body = full_text[match.end():].strip().replace("\0", "")  # Extra NUL clean
 
-    # Parse Timestamp
+    # Parse Timestamp (unchanged)
     dt = None
     try:
-        # heuristics on year / seconds
         if len(raw_date.split("/")[-1]) == 2:
             fmt_base = "%d/%m/%y, %I:%M:%S %p"
         else:
@@ -128,7 +127,6 @@ def _parse_buffered_message(match, buffer):
         dt = None
 
     return {"timestamp": dt, "sender": sender, "text": text_body, "raw_full": full_text}
-
 
 # --- THREAD WORKER: Processes a single batch of IDs (Now with Async LLM) ---
 def process_single_llm_batch(batch_data):
