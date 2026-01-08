@@ -170,7 +170,10 @@ def process_single_llm_batch(batch_data):
 
         # 2. Extract (Async via Sync Wrapper - Handles Parallelism Internally)
         try:
-            # This now runs async under the hood with high concurrency
+            log.info(f"Batch {batch_idx}: Extracting {len(texts_to_extract)} texts")
+            for i, txt in enumerate(texts_to_extract):
+                log.debug(f"Text {i}: {txt[:200]}...")
+                
             results = extract_listings_from_batch(texts_to_extract)
         except Exception as e:
             log.error(f"Batch {batch_idx} LLM Failed: {e}")
