@@ -173,7 +173,7 @@ def process_single_llm_batch(batch_data):
             log.info(f"Batch {batch_idx}: Extracting {len(texts_to_extract)} texts")
             for i, txt in enumerate(texts_to_extract):
                 log.debug(f"Text {i}: {txt[:200]}...")
-                
+
             results = extract_listings_from_batch(texts_to_extract)
         except Exception as e:
             log.error(f"Batch {batch_idx} LLM Failed: {e}")
@@ -239,7 +239,7 @@ def process_single_llm_batch(batch_data):
         # Bulk create listings
         if listing_buffer:
             with transaction.atomic():
-                ListingChunk.objects.bulk_create(listing_buffer, ignore_conflicts=False)
+                ListingChunk.objects.bulk_create(listing_buffer, ignore_conflicts=True)
                 log.info(f"Batch {batch_idx}: Saved {len(listing_buffer)} new listings to DB.")
 
                 # 4. Embeddings (If available; batch them)
