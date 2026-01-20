@@ -38,7 +38,7 @@ class PropertyListing(BaseModel):
     bhk: Optional[float] = Field(None, description="Number of bedrooms. Use 0.5 for RK/Studio.")
     sqft: Optional[int] = Field(None, description="Carpet area in square feet.")
     price: Optional[int] = Field(None, description="Total price or rent in INR. Normalize '1.5 Cr' to 15000000.")
-    furnishing: Optional[Literal['FURNISHED', 'SEMI-FURNISHED', 'UNFURNISHED']] = Field(None)
+    furnishing: Optional[Literal['FURNISHED', 'SEMI-FURNISHED', 'UNFURNISHED', 'UNKNOWN']] = Field(None)
     parking: Optional[int] = Field(None, description="Number of car parks.")
     features: List[str] = Field(default_factory=list, description="Key amenities (e.g., 'Sea View', 'Balcony', 'Terrace').")
     contact_numbers: List[str] = Field(default_factory=list, description="Extracted phone numbers.")

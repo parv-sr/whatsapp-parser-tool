@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% load static %}
+
 {% block content %}
 
 <style>
@@ -171,52 +173,52 @@
     </div>
 </div>
 
+<script src="{% static 'js/progress_poller.js' %}"></script>
 <script>
-    // Prevent multiple intervals (Django template caching issue)
-    if (!window.__progressPolling) {
-        window.__progressPolling = true;
+    document.addEventListener("DOMContentLoaded", function() {
+        const fileIds = JSON.parse('{{ processing_files|default:"[]"|safe }}');
+        
+        if (fileIds && fileIds.length > 0) {
+            // Initialize the industrial poller
+            const poller = new ProgressPoller({
+                ids: fileIds,
+                url: "{% url 'ingestion:progress_status' %}",
+                interval: 1800 
+            });
 
-        async function updateProgress() {
-            try {
-                const resp = await fetch("/ingestion/progress/");
-                if (!resp.ok) return;
-                const data = await resp.json();
-
-                if (!data.files || data.files.length === 0) {
-                    clearInterval(window.__progressInterval);
-                    return;
-                }
-
-                let allDone = true;
-                data.files.forEach(f => {
+            // OVERRIDE updateUI to match your specific HTML structure (<progress> tag)
+            poller.updateUI = function(files) {
+                files.forEach(f => {
                     const prog = document.getElementById("progress-" + f.id);
                     const stat = document.getElementById("status-" + f.id);
                     const wrapper = document.getElementById("file-wrapper-" + f.id);
 
                     if (!prog || !stat) return;
 
+                    // Update the native <progress> value attribute
                     prog.value = f.progress;
 
-                    if (f.progress >= 100) {
+                    // Update Status Text and Styles
+                    if (f.status === 'COMPLETED') {
                         stat.textContent = "Completed!";
                         stat.classList.add("status-success");
-                        wrapper.style.borderColor = "#4ade80";
-                        setTimeout(() => wrapper.style.opacity = "0.6", 1000);
+                        if (wrapper) {
+                            wrapper.classList.add("done"); // Adds opacity and green border
+                        }
+                        this.completedIds.add(f.id); // Tell poller to stop tracking this one
+                    } else if (f.status === 'FAILED') {
+                        stat.textContent = "Failed";
+                        stat.style.color = "#ef4444"; // Red
+                        this.completedIds.add(f.id);
                     } else {
                         stat.textContent = f.progress + "%";
-                        allDone = false;
                     }
                 });
+            };
 
-                if (allDone) clearInterval(window.__progressInterval);
-            } catch (err) {
-                console.warn("Progress fetch failed", err);
-            }
+            poller.start();
         }
-
-        updateProgress();
-        window.__progressInterval = setInterval(updateProgress, 1800);
-    }
+    });
 </script>
 
 {% endblock %}
