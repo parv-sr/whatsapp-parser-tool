@@ -86,7 +86,7 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # --- DATABASE CONFIGURATION ---
 # Uses Environment variables if available (Prod), falls back to localhost defaults (Dev)
 
-"""
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -100,9 +100,9 @@ DATABASES = {
         'DISABLE_SERVER_SIDE_CURSORS': True,
     }
 }
+
+
 """
-
-
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -113,7 +113,7 @@ DATABASES = {
         'PORT': '5432',
     }
 }
-
+"""
 
 
 # Add SSL options only if we are in Production/Remote DB context
