@@ -86,7 +86,7 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # --- DATABASE CONFIGURATION ---
 # Uses Environment variables if available (Prod), falls back to localhost defaults (Dev)
 
-
+"""
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -100,9 +100,9 @@ DATABASES = {
         'DISABLE_SERVER_SIDE_CURSORS': True,
     }
 }
-
-
 """
+
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -113,7 +113,7 @@ DATABASES = {
         'PORT': '5432',
     }
 }
-"""
+
 
 
 # Add SSL options only if we are in Production/Remote DB context
@@ -129,6 +129,8 @@ if not DEBUG and os.getenv("DB_HOST") not in ['localhost', '127.0.0.1']:
 REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/1')
 
 # 1. Base Settings (Local / No-SSL)
+# Note: If you eliminate Upstash completely, you must also switch these 
+# to use a Database Broker (e.g. 'django://') or RabbitMQ.
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_BROKER_USE_SSL = False
@@ -141,14 +143,12 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TASK_IGNORE_RESULT = True
 CELERY_TASK_STORE_ERRORS_EVEN_IF_IGNORED = True
 
+# --- MOVED CACHE TO DATABASE (SUPABASE) ---
 CACHES = {
     "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": REDIS_URL,
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-            # Note: CONNECTION_POOL_KWARGS is intentionally missing here for Local dev
-        }
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "django_cache_table",  # Table created via 'createcachetable'
+        "TIMEOUT": 3600,
     }
 }
 
@@ -169,10 +169,6 @@ if not DEBUG and REDIS_URL.startswith("rediss://"):
     CELERY_BROKER_USE_SSL = ssl_conf
     CELERY_REDIS_BACKEND_USE_SSL = ssl_conf
     
-    # Inject SSL args into Cache config
-    CACHES["default"]["OPTIONS"]["CONNECTION_POOL_KWARGS"] = {
-        "ssl_cert_reqs": ssl.CERT_NONE
-    }
 
 
 # --- PASSWORD VALIDATION ---

@@ -113,7 +113,7 @@ def upload_files(request):
 
         return redirect("ingestion:upload_success") if not errors else render(
             request,
-            "ingestion/upload_result.html",
+            "ingestion/upload_success.html",
             {"errors": errors, "created": created}
         )
 

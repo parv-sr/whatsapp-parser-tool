@@ -1,3 +1,4 @@
+# apps/ingestion/pipeline.py
 import re
 import hashlib
 import logging
@@ -31,8 +32,7 @@ log = logging.getLogger(__name__)
 BATCH_SIZE = 1000
 NUM_CORES = multiprocessing.cpu_count()
 
-# Optimized for speed while safe on Windows Threads
-LLM_BATCH_SIZE = 5  
+LLM_BATCH_SIZE = 60  
 MAX_WORKERS = 4  
 VECTOR_DEDUPE_DISTANCE_THRESHOLD = 0.05
 
