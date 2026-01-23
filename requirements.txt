@@ -20,4 +20,5 @@ uvicorn[standard]       # asgi utility
 tiktoken                # token utility for APIs
 tenacity                # HTTP tools
 django-celery-results   # celery backend utility
-kombu                   # Another celery backend utility
+sqlalchemy              # DB broker for celery
+kombu[sqlalchemy]       # Another celery backend utility
