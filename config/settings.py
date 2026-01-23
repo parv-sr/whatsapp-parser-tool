@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'django.contrib.postgres',
     'pgvector',
+    'django_celery_results',
     'apps.core',
     'apps.ingestion',
     'apps.preprocessing',
@@ -128,11 +129,20 @@ if not DEBUG and os.getenv("DB_HOST") not in ['localhost', '127.0.0.1']:
 
 REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/1')
 
-# 1. Base Settings (Local / No-SSL)
-# Note: If you eliminate Upstash completely, you must also switch these 
-# to use a Database Broker (e.g. 'django://') or RabbitMQ.
-CELERY_BROKER_URL = REDIS_URL
-CELERY_RESULT_BACKEND = REDIS_URL
+
+
+
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASS = os.getenv("DB_PASS", "admin@2025")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "whatsapp-parser-tool-db")
+
+CELERY_BROKER_URL = f'db+postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
+
+
+#CELERY_BROKER_URL = 'django://'
+CELERY_RESULT_BACKEND = 'django_db'
 CELERY_BROKER_USE_SSL = False
 CELERY_REDIS_BACKEND_USE_SSL = False
 
@@ -152,22 +162,6 @@ CACHES = {
     }
 }
 
-# 2. Production / SSL Overrides
-# Only apply SSL settings if DEBUG is False AND the URL supports it
-if not DEBUG and REDIS_URL.startswith("rediss://"):
-    
-    # Fix URL query params for Celery
-    if "?" not in REDIS_URL:
-        REDIS_URL += "?ssl_cert_reqs=none"
-    elif "ssl_cert_reqs" not in REDIS_URL:
-        REDIS_URL += "&ssl_cert_reqs=none"
-        
-    CELERY_BROKER_URL = REDIS_URL
-    CELERY_RESULT_BACKEND = REDIS_URL
-    
-    ssl_conf = {'ssl_cert_reqs': ssl.CERT_NONE}
-    CELERY_BROKER_USE_SSL = ssl_conf
-    CELERY_REDIS_BACKEND_USE_SSL = ssl_conf
     
 
 

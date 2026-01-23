@@ -6,6 +6,7 @@ openai                  # For calling openai apis
 pydantic                # Provides structure to inference drawn from LLMs
 simhash                 # For deduping using fuzzy matching
 celery                  # For running simultaneous tasks using celery workers
+celery[django]          # same thing as above
 django-redis            # DB utility for celery
 redis                   # Standalone redis installation
 rapidfuzz               # For secondary deduping using fuzzy matching
@@ -18,3 +19,5 @@ python-magic            # idk
 uvicorn[standard]       # asgi utility
 tiktoken                # token utility for APIs
 tenacity                # HTTP tools
+django-celery-results   # celery backend utility
+kombu                   # Another celery backend utility
