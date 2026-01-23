@@ -142,7 +142,7 @@ CELERY_BROKER_URL = f'sqlalchemy+postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_
 
 
 #CELERY_BROKER_URL = 'django://'
-CELERY_RESULT_BACKEND = 'django_db'
+CELERY_RESULT_BACKEND = 'django.db'
 CELERY_BROKER_USE_SSL = False
 CELERY_REDIS_BACKEND_USE_SSL = False
 
