@@ -178,45 +178,53 @@
     document.addEventListener("DOMContentLoaded", function() {
         const fileIds = JSON.parse('{{ processing_files|default:"[]"|safe }}');
         
+        console.log("Processing files:", fileIds);
+        
         if (fileIds && fileIds.length > 0) {
-            // Initialize the industrial poller
             const poller = new ProgressPoller({
                 ids: fileIds,
                 url: "{% url 'ingestion:progress_status' %}",
-                interval: 1800 
+                interval: 1800,
+                
+                // Custom update function for this page
+                onUpdate: function(files, pollerInstance) {
+                    files.forEach(f => {
+                        const prog = document.getElementById("progress-" + f.id);
+                        const stat = document.getElementById("status-" + f.id);
+                        const wrapper = document.getElementById("file-wrapper-" + f.id);
+
+                        if (!prog || !stat) {
+                            console.warn(`Elements not found for file ${f.id}`);
+                            return;
+                        }
+
+                        console.log(`File ${f.id}: ${f.status} ${f.progress}%`);
+
+                        // Update <progress> element
+                        prog.value = f.progress;
+
+                        // Update status
+                        if (f.status === 'COMPLETED') {
+                            stat.textContent = "Completed!";
+                            stat.classList.add("status-success");
+                            if (wrapper) wrapper.classList.add("done");
+                            pollerInstance.completedIds.add(f.id);
+                        } else if (f.status === 'FAILED') {
+                            stat.textContent = "Failed";
+                            stat.style.color = "#ef4444";
+                            pollerInstance.completedIds.add(f.id);
+                        } else if (f.status === 'PROCESSING') {
+                            stat.textContent = f.progress + "%";
+                        } else if (f.status === 'PENDING') {
+                            stat.textContent = "Queued...";
+                        }
+                    });
+                }
             });
 
-            // OVERRIDE updateUI to match your specific HTML structure (<progress> tag)
-            poller.updateUI = function(files) {
-                files.forEach(f => {
-                    const prog = document.getElementById("progress-" + f.id);
-                    const stat = document.getElementById("status-" + f.id);
-                    const wrapper = document.getElementById("file-wrapper-" + f.id);
-
-                    if (!prog || !stat) return;
-
-                    // Update the native <progress> value attribute
-                    prog.value = f.progress;
-
-                    // Update Status Text and Styles
-                    if (f.status === 'COMPLETED') {
-                        stat.textContent = "Completed!";
-                        stat.classList.add("status-success");
-                        if (wrapper) {
-                            wrapper.classList.add("done"); // Adds opacity and green border
-                        }
-                        this.completedIds.add(f.id); // Tell poller to stop tracking this one
-                    } else if (f.status === 'FAILED') {
-                        stat.textContent = "Failed";
-                        stat.style.color = "#ef4444"; // Red
-                        this.completedIds.add(f.id);
-                    } else {
-                        stat.textContent = f.progress + "%";
-                    }
-                });
-            };
-
             poller.start();
+        } else {
+            console.log("No files to track");
         }
     });
 </script>

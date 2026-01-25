@@ -72,8 +72,6 @@ def upload_files(request):
                 errors.append(f"{f.name}: not a .txt file (mime={mime})")
                 continue
 
-            # --- CRITICAL FIX START ---
-            # Use an atomic block to ensure the DB row is committed before the task starts.
             try:
                 with transaction.atomic():
                     # 1. Create the DB row
@@ -86,30 +84,44 @@ def upload_files(request):
                     )
                     created.append(rf)
                     processing_ids.append(rf.id)
+                    
+                    log.info(f"✅ Created RawFile record: id={rf.id}, name={rf.file_name}")
 
                     # 2. Update Cache (Progress tracking)
-                    cache.set(f"progress:{rf.id}", 0)
+                    cache.set(f"progress:{rf.id}", 0, timeout=3600)
+                    log.info(f"✅ Set cache progress:{rf.id} = 0")
 
                     active = cache.get("processing_files", [])
                     if rf.id not in active:
                         active.append(rf.id)
-                        cache.set("processing_files", active)
-
-                    # 3. Schedule Task safely
-                    # FIX: `file_id=rf.id` binds the current ID to the lambda immediately.
-                    # Without this, all lambdas would run with the ID of the *last* file in the loop.
-                    transaction.on_commit(lambda file_id=rf.id: process_file_task.delay(file_id))
+                        cache.set("processing_files", active, timeout=3600)
                     
-                    log.info("Scheduled Celery task for RawFile id=%s", rf.id)
+                    log.info(f"✅ Updated processing_files cache: {active}")
+
+                # 3. Schedule Task OUTSIDE atomic block (important!)
+                # This ensures DB commit happens before task dispatch
+                def schedule_task(file_id):
+                    log.info(f"🚀 Attempting to queue task for file_id={file_id}")
+                    try:
+                        result = process_file_task.delay(file_id)
+                        log.info(f"✅ Task queued successfully: task_id={result.id}, file_id={file_id}")
+                        return result
+                    except Exception as e:
+                        log.error(f"❌ Failed to queue task for file_id={file_id}: {e}", exc_info=True)
+                        raise
+                
+                transaction.on_commit(lambda fid=rf.id: schedule_task(fid))
+                log.info(f"✅ Registered on_commit callback for file_id={rf.id}")
 
             except Exception as e:
-                log.exception(f"Failed to save or schedule file {f.name}")
-                errors.append(f"{f.name}: Internal Error")
-            # --- CRITICAL FIX END ---
+                log.exception(f"❌ Failed to save or schedule file {f.name}")
+                errors.append(f"{f.name}: Internal Error - {str(e)}")
 
         # Update session with final lists
         request.session["uploaded_files"] = uploaded_files
         request.session["processing_files"] = processing_ids
+        
+        log.info(f"📋 Session updated: {len(processing_ids)} files queued")
 
         return redirect("ingestion:upload_success") if not errors else render(
             request,

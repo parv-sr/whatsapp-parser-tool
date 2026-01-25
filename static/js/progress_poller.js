@@ -1,72 +1,87 @@
-class ProgressPoller{
-    constructor(config){
+class ProgressPoller {
+    constructor(config) {
         this.ids = config.ids || [];
         this.url = config.url;
         this.intervalTime = config.interval || 2000;
         this.timer = null;
         this.completedIds = new Set();
+        this.onUpdate = config.onUpdate || null; // Custom callback
     }
 
     start() {
-        if (this.ids.length == 0) return;
-        this.poll();
+        if (this.ids.length === 0) {
+            console.log("No files to track");
+            return;
+        }
+        console.log(`Starting poller for ${this.ids.length} files`);
+        this.poll(); // Initial poll
         this.timer = setInterval(() => this.poll(), this.intervalTime);
     }
 
     stop() {
-        if (this.timer) clearInterval(this.timer);
+        if (this.timer) {
+            clearInterval(this.timer);
+            this.timer = null;
+            console.log("Poller stopped");
+        }
     }
 
     async poll() {
         const activeIds = this.ids.filter(id => !this.completedIds.has(id));
 
-        if (activeIds.length == 0){
-            console.log("All filer processed. Stopping poller.")
-            this.stop()
+        if (activeIds.length === 0) {
+            console.log("All files completed. Stopping poller.");
+            this.stop();
             return;
         }
 
-        try{
+        try {
             const response = await fetch(`${this.url}?ids=${activeIds.join(',')}`);
-            if (!response.ok) throw new Error("Network response not ok");
+            if (!response.ok) {
+                console.error("Polling failed:", response.status);
+                return;
+            }
 
             const data = await response.json();
-            this.updateUI(data.files);
-        }catch (error) {
-            console.error("Polling error: ", error)
+            
+            // Use custom callback if provided, otherwise default UI update
+            if (this.onUpdate) {
+                this.onUpdate(data.files, this);
+            } else {
+                this.defaultUpdateUI(data.files);
+            }
+        } catch (error) {
+            console.error("Polling error:", error);
         }
     }
 
-    updateUI(files) {
-        files.forEach(file => {
-            // Update Progress Bar
-            const bar = document.getElementById(`progress-${file.id}`);
-            if (bar) {
-                bar.style.width = `${file.progress}%`;
-                bar.setAttribute('aria-valuenow', file.progress);
-                
-                // UX: Change color on completion/failure
-                if (file.status === 'COMPLETED') {
-                    bar.classList.remove('progress-bar-striped', 'progress-bar-animated', 'bg-primary');
-                    bar.classList.add('bg-success');
-                    this.completedIds.add(file.id);
-                } else if (file.status === 'FAILED') {
-                    bar.classList.remove('progress-bar-striped', 'progress-bar-animated');
-                    bar.classList.add('bg-danger');
-                    this.completedIds.add(file.id);
-                }
+    defaultUpdateUI(files) {
+        files.forEach(f => {
+            const prog = document.getElementById(`progress-${f.id}`);
+            const stat = document.getElementById(`status-${f.id}`);
+            const wrapper = document.getElementById(`file-wrapper-${f.id}`);
+
+            // Update progress (native <progress> element)
+            if (prog && prog.tagName === 'PROGRESS') {
+                prog.value = f.progress;
             }
 
-            // Update Status Badge/Text
-            const badge = document.getElementById(`status-${file.id}`);
-            if (badge) {
-                badge.textContent = file.status;
-                // Reset classes and apply new ones
-                badge.className = 'badge status-badge'; 
-                if (file.status === 'COMPLETED') badge.classList.add('bg-success');
-                else if (file.status === 'FAILED') badge.classList.add('bg-danger');
-                else if (file.status === 'PROCESSING') badge.classList.add('bg-primary');
-                else badge.classList.add('bg-secondary');
+            // Update status text
+            if (stat) {
+                if (f.status === 'COMPLETED') {
+                    stat.textContent = "Completed!";
+                    stat.classList.add("status-success");
+                    if (wrapper) wrapper.classList.add("done");
+                    this.completedIds.add(f.id);
+                } else if (f.status === 'FAILED') {
+                    stat.textContent = "Failed";
+                    stat.style.color = "#ef4444";
+                    this.completedIds.add(f.id);
+                } else if (f.status === 'PROCESSING') {
+                    stat.textContent = `${f.progress}%`;
+                } else {
+                    stat.textContent = f.status;
+                }
             }
         });
     }

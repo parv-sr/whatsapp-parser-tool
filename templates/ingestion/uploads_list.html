@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% load tz %}
+{% load static %}
 
 {% block title %}All Uploads{% endblock %}
 
@@ -140,30 +141,63 @@
     </div>
 </div>
 
-<!-- ... Existing dialog/modal unchanged ... -->
+<dialog id="error-dialog">
+    <article>
+        <header>
+            <h3>Error Details</h3>
+            <button class="close-modal" onclick="closeError()">×</button>
+        </header>
+        <div id="error-text" class="error-content"></div>
+    </article>
+</dialog>
 
 <script>
-    // --- Enhanced Polling with ETA ---
-    const progressHistory = {};  // {fileId: [{time: ms, prog: %}, ...]}
+    function showError(msg) {
+        document.getElementById('error-text').textContent = msg;
+        document.getElementById('error-dialog').setAttribute('open', true);
+    }
+    function closeError() {
+        document.getElementById('error-dialog').removeAttribute('open');
+    }
+</script>
 
-    if (document.querySelector(".badge-processing, .badge-pending")) {
-        const poll = setInterval(async () => {
-            try {
-                const res = await fetch("/ingestion/progress/");
-                if (!res.ok) return;
-                const { files } = await res.json();
+<script src="{% static 'js/progress_poller.js' %}"></script>
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        // 1. Find all active files
+        const activeBadges = document.querySelectorAll('.badge-pending, .badge-processing');
+        const activeIds = Array.from(activeBadges).map(badge => {
+            return parseInt(badge.id.replace('badge-', ''));
+        });
 
-                let hasActive = false;
+        console.log("Active files:", activeIds);
+        
+        if (activeIds.length === 0) {
+            console.log("No active uploads to track");
+            return;
+        }
 
+        // 2. Progress history for ETA calculation
+        const progressHistory = {};
+
+        // 3. Start poller with custom update logic
+        const poller = new ProgressPoller({
+            ids: activeIds,
+            url: "{% url 'ingestion:progress_status' %}",
+            interval: 1500,
+            
+            onUpdate: function(files, pollerInstance) {
                 files.forEach(f => {
-                    const badge = document.getElementById("badge-" + f.id);
                     const fill = document.getElementById("fill-" + f.id);
                     const text = document.getElementById("text-" + f.id);
+                    const badge = document.getElementById("badge-" + f.id);
                     const eta = document.getElementById("eta-" + f.id);
                     const wrapper = document.getElementById("wrapper-" + f.id);
 
-                    // Init history if new
+                    const now = Date.now();
                     if (!progressHistory[f.id]) progressHistory[f.id] = [];
+
+                    console.log(`File ${f.id}: ${f.status} ${f.progress}%`);
 
                     // Update badge
                     if (badge) {
@@ -171,60 +205,75 @@
                         badge.textContent = f.status.charAt(0) + f.status.slice(1).toLowerCase();
                     }
 
-                    // Handle active states
-                    if ((f.status === "PROCESSING" || f.status === "PENDING") && fill && text && eta) {
-                        const now = Date.now();
-                        const prevProg = progressHistory[f.id].length > 0 ? progressHistory[f.id].slice(-1)[0].prog : 0;
-
-                        // Update progress
+                    // Update progress bars (for PROCESSING/PENDING)
+                    if ((f.status === "PROCESSING" || f.status === "PENDING") && fill && text) {
                         fill.style.width = `${f.progress}%`;
                         text.textContent = `${f.progress}%`;
 
-                        // Push to history if changed
-                        if (f.progress !== prevProg) {
+                        // Record progress history
+                        const lastEntry = progressHistory[f.id][progressHistory[f.id].length - 1];
+                        if (!lastEntry || lastEntry.prog !== f.progress) {
                             progressHistory[f.id].push({ time: now, prog: f.progress });
+                            
+                            // Keep only last 10 points
+                            if (progressHistory[f.id].length > 10) {
+                                progressHistory[f.id].shift();
+                            }
                         }
 
-                        // Calculate ETA (if >1 updates)
-                        if (progressHistory[f.id].length > 1 && f.progress < 100) {
-                            const hist = progressHistory[f.id];
-                            const deltaTime = (now - hist[0].time) / 1000;  // sec
-                            const deltaProg = f.progress - hist[0].prog;
-                            const speed = deltaProg / deltaTime;  // %/sec
-                            const remaining = 100 - f.progress;
-                            const etaSec = speed > 0 ? Math.round(remaining / speed) : Infinity;
-                            eta.textContent = etaSec < Infinity ? `ETA: ~${etaSec}s` : "Calculating...";
-                        } else if (f.status === "PENDING") {
-                            eta.innerHTML = '<span class="pending-state"><span class="spinner"></span> Queued...</span>';
-                        } else {
-                            eta.textContent = "Starting...";
+                        // Calculate ETA
+                        if (eta) {
+                            if (f.status === "PENDING") {
+                                eta.innerHTML = '<span class="pending-state"><span class="spinner"></span> Queued...</span>';
+                            } else if (progressHistory[f.id].length > 1 && f.progress > 0 && f.progress < 100) {
+                                const hist = progressHistory[f.id];
+                                const timeDiff = (now - hist[0].time) / 1000; // seconds
+                                const progDiff = f.progress - hist[0].prog;
+
+                                if (progDiff > 0 && timeDiff > 0) {
+                                    const speed = progDiff / timeDiff;
+                                    const remaining = 100 - f.progress;
+                                    const etaSec = Math.round(remaining / speed);
+                                    
+                                    if (etaSec < 3600) {
+                                        const min = Math.floor(etaSec / 60);
+                                        const sec = etaSec % 60;
+                                        eta.textContent = min > 0 ? `ETA: ~${min}m ${sec}s` : `ETA: ~${sec}s`;
+                                    } else {
+                                        eta.textContent = "Processing...";
+                                    }
+                                } else {
+                                    eta.textContent = "Calculating...";
+                                }
+                            } else {
+                                eta.textContent = "Starting...";
+                            }
                         }
-
-                        hasActive = true;
                     }
 
-                    // Final states
-                    if (f.status === "COMPLETED" && wrapper) {
-                        wrapper.innerHTML = '<span class="completed-check">✔ Completed</span>';
+                    // Handle completion
+                    if (f.status === "COMPLETED") {
+                        if (wrapper) {
+                            wrapper.innerHTML = '<span class="completed-check">✔ Completed</span>';
+                        }
+                        pollerInstance.completedIds.add(f.id);
                     }
-                    if (f.status === "FAILED" && wrapper) {
-                        const btn = f.error ? `<button class="view-error-btn" onclick="showError('${f.error.replace(/'/g, "\\'")}')">View Error</button>` : "";
-                        wrapper.innerHTML = `<div class="failed-state"><span>✖ Failed</span>${btn}</div>`;
+                    
+                    // Handle failure
+                    if (f.status === "FAILED") {
+                        const errorMsg = (f.error || "").replace(/'/g, "\\'");
+                        const btn = errorMsg ? `<button class="view-error-btn" onclick="showError('${errorMsg}')">View Error</button>` : "";
+                        if (wrapper) {
+                            wrapper.innerHTML = `<div class="failed-state"><span>✖ Failed</span>${btn}</div>`;
+                        }
+                        pollerInstance.completedIds.add(f.id);
                     }
                 });
-
-                if (!hasActive && files.length > 0 && files.every(f => f.status !== "PROCESSING" && f.status !== "PENDING")) {
-                    clearInterval(poll);
-                }
-
-                if (files.length === 0) {
-                    clearInterval(poll);
-                }
-            } catch (e) {
-                console.warn("Progress poll failed:", e);
             }
-        }, 1000);  // Faster poll: 1s for more dynamic updates
-    }
+        });
+
+        poller.start();
+    });
 </script>
 
 {% endblock %}

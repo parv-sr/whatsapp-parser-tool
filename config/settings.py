@@ -87,7 +87,7 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # --- DATABASE CONFIGURATION ---
 # Uses Environment variables if available (Prod), falls back to localhost defaults (Dev)
 
-
+"""
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -101,9 +101,9 @@ DATABASES = {
         'DISABLE_SERVER_SIDE_CURSORS': True,
     }
 }
-
-
 """
+
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -114,7 +114,7 @@ DATABASES = {
         'PORT': '5432',
     }
 }
-"""
+
 
 
 # Add SSL options only if we are in Production/Remote DB context
@@ -130,8 +130,6 @@ if not DEBUG and os.getenv("DB_HOST") not in ['localhost', '127.0.0.1']:
 REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/1')
 
 
-
-
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASS = os.getenv("DB_PASS", "admin@2025")
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -139,6 +137,9 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "whatsapp-parser-tool-db")
 
 CELERY_BROKER_URL = f'sqlalchemy+postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
+
+if not DEBUG and DB_HOST not in ['localhost', '127.0.0.1']:
+    CELERY_BROKER_URL += '?sslmode=require'
 
 
 #CELERY_BROKER_URL = 'django://'
@@ -195,6 +196,9 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_DIRS = [
+    BASE_DIR / "static",
+]
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 MEDIA_URL = '/media/'
