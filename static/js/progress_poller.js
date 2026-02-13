@@ -5,18 +5,19 @@ class ProgressPoller {
         this.intervalTime = config.interval || 2000;
         this.timer = null;
         this.completedIds = new Set();
-        this.onUpdate = config.onUpdate || null; 
+        this.onUpdate = config.onUpdate || null;
         this.requestInFlight = false;
-        console.log(`[POLLER] Initialised ids=${JSON.stringify(this.ids)} interval=${this.intervalTime}ms url=${this.url}`)
+        console.log(`[poller] initialized ids=${JSON.stringify(this.ids)} interval=${this.intervalTime}ms url=${this.url}`);
     }
 
     start() {
         if (this.ids.length === 0) {
-            console.log("[POLLER] No files to track");
+            console.log("[poller] no files to track");
             return;
         }
-        console.log(`[POLLER] Starting poller for ${this.ids.length} files`);
-        this.poll(); // Initial poll
+
+        console.log(`[poller] starting for ${this.ids.length} files`);
+        this.poll();
         this.timer = setInterval(() => this.poll(), this.intervalTime);
     }
 
@@ -24,61 +25,60 @@ class ProgressPoller {
         if (this.timer) {
             clearInterval(this.timer);
             this.timer = null;
-            console.log("[POLLER] Poller stopped");
+            console.log("[poller] stopped");
         }
     }
 
     async poll() {
-        if(this.requestInFlight){
-            console.log("[POLLER] Skipping poll because previous request is still running")
+        if (this.requestInFlight) {
+            console.log("[poller] skipping poll because previous request is still running");
             return;
         }
-        const activeIds = this.ids.filter(id => !this.completedIds.has(id));
 
+        const activeIds = this.ids.filter(id => !this.completedIds.has(id));
         if (activeIds.length === 0) {
-            console.log("[POLLER] All files completed. Stopping poller.");
+            console.log("[poller] all files reached terminal status; stopping");
             this.stop();
             return;
         }
 
         this.requestInFlight = true;
-        const pollUrl = `${this.url}?ids=${activeIds.join(',')}&_=${Date.now()}`
-        console.log(`[POLLER] request start activeIds=${activeIds.join(',')} url=${pollUrl}`);
+        const pollUrl = `${this.url}?ids=${activeIds.join(',')}&_=${Date.now()}`;
+        console.log(`[poller] request start activeIds=${activeIds.join(',')} url=${pollUrl}`);
 
         try {
             const response = await fetch(pollUrl, { cache: "no-store" });
-
             if (!response.ok) {
-                console.error("[POLLER] Polling failed:", response.status);
+                console.error(`[poller] request failed status=${response.status}`);
                 return;
             }
 
             const data = await response.json();
-            
+            console.log(`[poller] response ok file_count=${(data.files || []).length}`);
+
             if (this.onUpdate) {
                 this.onUpdate(data.files || [], this);
             } else {
                 this.defaultUpdateUI(data.files || []);
             }
         } catch (error) {
-            console.error("[POLLER] Error:", error);
-        } finally{
+            console.error("[poller] polling error", error);
+        } finally {
             this.requestInFlight = false;
-            console.log("[POLLER] Request complete")
+            console.log("[poller] request complete");
         }
     }
 
     defaultUpdateUI(files) {
         files.forEach(f => {
-            console.log(`[POLLER] default update file=${f.id} status=${f.status} progress=${f.progress}`);
-            const meter = document.getElementById(`meter-${f.id}`)
+            console.log(`[poller] default update file=${f.id} status=${f.status} progress=${f.progress}`);
+            const meter = document.getElementById(`meter-${f.id}`);
             const stat = document.getElementById(`status-${f.id}`);
             const wrapper = document.getElementById(`file-wrapper-${f.id}`);
 
-            if (meter){
+            if (meter) {
                 const stage = Math.max(0, Math.min(5, f.stage || 0));
                 const cells = meter.querySelectorAll('.stage-cell');
-
                 cells.forEach((cell, idx) => {
                     cell.classList.toggle('on', idx < stage);
                 });

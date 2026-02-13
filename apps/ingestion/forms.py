@@ -4,7 +4,7 @@ from .widgets import MultiFileInput
 class MultiTxtUploadForm(forms.Form):
     files = forms.FileField(
         widget=MultiFileInput(attrs={"multiple": True}),
-        help_text="Upload one or more .txt WhatsApp export files.",
+        help_text="Upload one or more .txt files, or .zip/.rar archives.",
     )
 
     def clean_files(self):

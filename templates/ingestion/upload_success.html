@@ -2,41 +2,45 @@
 {% load static %}
 
 {% block content %}
-
 <style>
-    /* Layout (unchanged) */
-    .success-container {
-        max-width: 800px;
-        margin: 0 auto;
-        padding: 2rem 1rem;
-    }
-
+    /* Glassmorphism Panel Styles 
+       Reusing the look from the upload form for consistency
+    */
     .glass-panel {
-        background: rgba(255, 255, 255, 0.03);
-        backdrop-filter: blur(12px);
+        background: rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 16px;
         padding: 2rem;
         margin-bottom: 2rem;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
     }
 
-    h2 { color: white; margin-bottom: 0.5rem; text-align: center; }
-    h3 { color: var(--pico-primary); font-size: 1.1rem; margin: 0 0 1rem; text-transform: uppercase; letter-spacing: 1px; }
+    h3 {
+        margin-top: 0;
+        margin-bottom: 1.5rem;
+        font-weight: 700;
+        color: #e2e8f0;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+        padding-bottom: 0.5rem;
+    }
 
-    /* File List (unchanged) */
+    /* File List */
     .file-list {
-        list-style: none; padding: 0; margin: 0;
+        list-style: none;
+        padding: 0;
+        margin: 0;
     }
     .file-list li {
-        background: rgba(255,255,255,0.05);
-        margin-bottom: 0.5rem;
-        padding: 0.75rem 1rem;
-        border-radius: 8px;
-        color: white;
+        padding: 0.8rem 0;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+        color: #94a3b8;
         display: flex;
         align-items: center;
-        border: 1px solid rgba(255,255,255,0.05);
+    }
+    .file-list li:last-child {
+        border-bottom: none;
     }
     .file-list li::before {
         content: "File";
@@ -91,14 +95,12 @@
     }
     .btn-secondary:hover {
         background: rgba(255,255,255,0.15);
-        border-color: var(--pico-primary);
         transform: translateY(-2px);
     }
 </style>
 
-<div class="success-container">
-    <h2>Upload Successful</h2>
-    <p style="text-align:center; color:#ccc;">Your WhatsApp chats are being parsed in the background. Sit back!</p>
+<div style="max-width: 800px; margin: 2rem auto;">
+    <h2 style="text-align: center; margin-bottom: 2rem;">Upload Summary</h2>
 
     <div class="glass-panel">
         <h3>Uploaded Files</h3>
@@ -125,7 +127,7 @@
                         <span id="status-{{ file_id }}" class="status-text">starting…</span>
                     </div>
                     <div id="meter-{{ file_id }}" class="stage-meter" data-stage="1">
-                        <span class="stage-cell"></span><span class="stage-cell"></span><span class="stage-cell"></span><span class="stage-cell"></span><span class="stage-cell"></span>
+                        <span class="stage-cell on"></span><span class="stage-cell"></span><span class="stage-cell"></span><span class="stage-cell"></span><span class="stage-cell"></span>
                     </div>
                 </li>
                 {% endfor %}
@@ -143,10 +145,11 @@
     </div>
 </div>
 
+{{ processing_files|default:"[]"|json_script:"processing-file-ids" }}
 <script src="{% static 'js/progress_poller.js' %}"></script>
 <script>
     document.addEventListener("DOMContentLoaded", function() {
-        const fileIds = "{{ processing_files|default:'[]'|safe }}"
+        const fileIds = JSON.parse(document.getElementById("processing-file-ids").textContent || "[]");
         
         console.log("Processing files:", fileIds);
         
@@ -172,7 +175,6 @@
 
                         const stage = Math.max(0, Math.min(5, f.stage || 0));
                         const cells = meter.querySelectorAll('.stage-cell');
-                        
                         cells.forEach((cell, idx) => {
                             cell.classList.toggle('on', idx < stage);
                         });
@@ -184,13 +186,17 @@
                             if (wrapper) wrapper.classList.add("done");
                             pollerInstance.completedIds.add(f.id);
                         } else if (f.status === 'FAILED') {
-                            stat.textContent = "Failed";
-                            stat.style.color = "#ef4444";
+                            stat.textContent = 'Failed';
+                            stat.style.color = '#ef4444';
+                            pollerInstance.completedIds.add(f.id);
+                        } else if (f.status === 'CANCELLED') {
+                            stat.textContent = 'Cancelled';
+                            stat.style.color = '#f59e0b';
                             pollerInstance.completedIds.add(f.id);
                         } else if (f.status === 'PROCESSING') {
                             stat.textContent = f.stage_label || 'Processing';
                         } else if (f.status === 'PENDING') {
-                            stat.textContent = f.stage_label || "Queued";
+                            stat.textContent = f.stage_label || 'Queued';
                         }
                     });
                 }

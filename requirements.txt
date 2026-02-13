@@ -22,3 +22,4 @@ tenacity                # HTTP tools
 django-celery-results   # celery backend utility
 sqlalchemy              # DB broker for celery
 kombu[sqlalchemy]       # Another celery backend utility
+rarfile                 # read .rar archives for uploaded chat bundles
