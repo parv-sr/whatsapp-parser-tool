@@ -5,15 +5,17 @@ class ProgressPoller {
         this.intervalTime = config.interval || 2000;
         this.timer = null;
         this.completedIds = new Set();
-        this.onUpdate = config.onUpdate || null; // Custom callback
+        this.onUpdate = config.onUpdate || null; 
+        this.requestInFlight = false;
+        console.log(`[POLLER] Initialised ids=${JSON.stringify(this.ids)} interval=${this.intervalTime}ms url=${this.url}`)
     }
 
     start() {
         if (this.ids.length === 0) {
-            console.log("No files to track");
+            console.log("[POLLER] No files to track");
             return;
         }
-        console.log(`Starting poller for ${this.ids.length} files`);
+        console.log(`[POLLER] Starting poller for ${this.ids.length} files`);
         this.poll(); // Initial poll
         this.timer = setInterval(() => this.poll(), this.intervalTime);
     }
@@ -22,51 +24,66 @@ class ProgressPoller {
         if (this.timer) {
             clearInterval(this.timer);
             this.timer = null;
-            console.log("Poller stopped");
+            console.log("[POLLER] Poller stopped");
         }
     }
 
     async poll() {
+        if(this.requestInFlight){
+            console.log("[POLLER] Skipping poll because previous request is still running")
+            return;
+        }
         const activeIds = this.ids.filter(id => !this.completedIds.has(id));
 
         if (activeIds.length === 0) {
-            console.log("All files completed. Stopping poller.");
+            console.log("[POLLER] All files completed. Stopping poller.");
             this.stop();
             return;
         }
 
+        this.requestInFlight = true;
+        const pollUrl = `${this.url}?ids=${activeIds.join(',')}&_=${Date.now()}`
+        console.log(`[POLLER] request start activeIds=${activeIds.join(',')} url=${pollUrl}`);
+
         try {
-            const response = await fetch(`${this.url}?ids=${activeIds.join(',')}`);
+            const response = await fetch(pollUrl, { cache: "no-store" });
+
             if (!response.ok) {
-                console.error("Polling failed:", response.status);
+                console.error("[POLLER] Polling failed:", response.status);
                 return;
             }
 
             const data = await response.json();
             
-            // Use custom callback if provided, otherwise default UI update
             if (this.onUpdate) {
-                this.onUpdate(data.files, this);
+                this.onUpdate(data.files || [], this);
             } else {
-                this.defaultUpdateUI(data.files);
+                this.defaultUpdateUI(data.files || []);
             }
         } catch (error) {
-            console.error("Polling error:", error);
+            console.error("[POLLER] Error:", error);
+        } finally{
+            this.requestInFlight = false;
+            console.log("[POLLER] Request complete")
         }
     }
 
     defaultUpdateUI(files) {
         files.forEach(f => {
-            const prog = document.getElementById(`progress-${f.id}`);
+            console.log(`[POLLER] default update file=${f.id} status=${f.status} progress=${f.progress}`);
+            const meter = document.getElementById(`meter-${f.id}`)
             const stat = document.getElementById(`status-${f.id}`);
             const wrapper = document.getElementById(`file-wrapper-${f.id}`);
 
-            // Update progress (native <progress> element)
-            if (prog && prog.tagName === 'PROGRESS') {
-                prog.value = f.progress;
+            if (meter){
+                const stage = Math.max(0, Math.min(5, f.stage || 0));
+                const cells = meter.querySelectorAll('.stage-cell');
+
+                cells.forEach((cell, idx) => {
+                    cell.classList.toggle('on', idx < stage);
+                });
             }
 
-            // Update status text
             if (stat) {
                 if (f.status === 'COMPLETED') {
                     stat.textContent = "Completed!";
@@ -77,10 +94,12 @@ class ProgressPoller {
                     stat.textContent = "Failed";
                     stat.style.color = "#ef4444";
                     this.completedIds.add(f.id);
-                } else if (f.status === 'PROCESSING') {
-                    stat.textContent = `${f.progress}%`;
+                } else if (f.status === 'CANCELLED') {
+                    stat.textContent = "Cancelled";
+                    stat.style.color = "#f59e0b";
+                    this.completedIds.add(f.id);
                 } else {
-                    stat.textContent = f.status;
+                    stat.textContent = f.stage_label || f.status;
                 }
             }
         });

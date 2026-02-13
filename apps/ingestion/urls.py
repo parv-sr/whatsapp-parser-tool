@@ -9,4 +9,5 @@ urlpatterns = [
     path("uploads/", views.uploads_list, name="uploads_list"),
     path('upload/success/', views.upload_success, name='upload_success'),
     path("progress/", views.progress_status, name="progress_status"),
+    path("uploads/<int:file_id>/cancel/", views.cancel_upload, name="cancel_upload"),
 ]

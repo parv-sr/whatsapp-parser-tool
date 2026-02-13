@@ -62,41 +62,9 @@
         border-color: #4ade80;
     }
 
-    /* THE FIX: Fully styleable progress bar */
-    progress {
-        display: block;
-        width: 100%;
-        height: 12px;
-        margin: 0.8rem 0 0;
-        border: none;
-        border-radius: 10px;
-        background-color: rgba(255,255,255,0.1);
-        overflow: hidden;
-
-        /* Critical: Remove native appearance */
-        appearance: none;
-        -webkit-appearance: none;
-        -moz-appearance: none;
-    }
-
-    /* WebKit (Chrome, Safari, Edge) */
-    progress::-webkit-progress-bar {
-        background-color: rgba(255,255,255,0.1);
-        border-radius: 10px;
-    }
-    progress::-webkit-progress-value {
-        background: linear-gradient(90deg, var(--pico-primary), #00ffd5);
-        border-radius: 10px;
-        box-shadow: 0 0 15px rgba(0, 255, 200, 0.5);
-        transition: width 0.4s ease;
-    }
-
-    /* Firefox */
-    progress::-moz-progress-bar {
-        background: linear-gradient(90deg, var(--pico-primary), #00ffd5);
-        border-radius: 10px;
-        box-shadow: 0 0 15px rgba(0, 255, 200, 0.5);
-    }
+    .stage-meter { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 0.8rem; }
+    .stage-cell { height: 12px; border-radius: 5px; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.14); }
+    .stage-cell.on { background: linear-gradient(90deg, var(--pico-primary), #00ffd5); box-shadow: 0 0 12px rgba(0, 255, 200, 0.45); }
 
     /* Status */
     .status-text { 
@@ -156,7 +124,9 @@
                         <strong>File ID: {{ file_id }}</strong>
                         <span id="status-{{ file_id }}" class="status-text">starting…</span>
                     </div>
-                    <progress id="progress-{{ file_id }}" value="0" max="100"></progress>
+                    <div id="meter-{{ file_id }}" class="stage-meter" data-stage="1">
+                        <span class="stage-cell"></span><span class="stage-cell"></span><span class="stage-cell"></span><span class="stage-cell"></span><span class="stage-cell"></span>
+                    </div>
                 </li>
                 {% endfor %}
             </ul>
@@ -176,7 +146,7 @@
 <script src="{% static 'js/progress_poller.js' %}"></script>
 <script>
     document.addEventListener("DOMContentLoaded", function() {
-        const fileIds = JSON.parse('{{ processing_files|default:"[]"|safe }}');
+        const fileIds = "{{ processing_files|default:'[]'|safe }}"
         
         console.log("Processing files:", fileIds);
         
@@ -189,19 +159,23 @@
                 // Custom update function for this page
                 onUpdate: function(files, pollerInstance) {
                     files.forEach(f => {
-                        const prog = document.getElementById("progress-" + f.id);
+                        const meter = document.getElementById("meter-" + f.id);
                         const stat = document.getElementById("status-" + f.id);
                         const wrapper = document.getElementById("file-wrapper-" + f.id);
 
-                        if (!prog || !stat) {
+                        if (!meter || !stat) {
                             console.warn(`Elements not found for file ${f.id}`);
                             return;
                         }
 
                         console.log(`File ${f.id}: ${f.status} ${f.progress}%`);
 
-                        // Update <progress> element
-                        prog.value = f.progress;
+                        const stage = Math.max(0, Math.min(5, f.stage || 0));
+                        const cells = meter.querySelectorAll('.stage-cell');
+                        
+                        cells.forEach((cell, idx) => {
+                            cell.classList.toggle('on', idx < stage);
+                        });
 
                         // Update status
                         if (f.status === 'COMPLETED') {
@@ -214,9 +188,9 @@
                             stat.style.color = "#ef4444";
                             pollerInstance.completedIds.add(f.id);
                         } else if (f.status === 'PROCESSING') {
-                            stat.textContent = f.progress + "%";
+                            stat.textContent = f.stage_label || 'Processing';
                         } else if (f.status === 'PENDING') {
-                            stat.textContent = "Queued...";
+                            stat.textContent = f.stage_label || "Queued";
                         }
                     });
                 }

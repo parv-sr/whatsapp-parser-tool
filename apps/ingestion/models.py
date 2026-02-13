@@ -25,6 +25,7 @@ class RawFile(models.Model):
             ("PROCESSING", "Processing"),
             ("COMPLETED", "Completed"),
             ("FAILED", "Failed"),
+            ("CANCELLED", "Cancelled"),
         ]
     )
 

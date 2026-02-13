@@ -1,6 +1,8 @@
 # Updated apps/ingestion/tasks.py
 from celery import shared_task
 from django.db import close_old_connections
+from django.core.cache import cache
+
 import logging
 from time import sleep  # For race condition handling
 
@@ -31,8 +33,14 @@ def process_file_task(self, file_id):
         if attempts == max_attempts:
             raise Exception(f"RawFile {file_id} not found after {max_attempts}s wait")
 
-        # Calls the threaded orchestrator
+        if cache.get(f"cancel:{file_id}", False):
+            log.warning("Task exiting early because file_id=%s is already cancelled", file_id)
+            RawFile.objects.filter(pk=file_id).update(status="CANCELLED", notes="Cancelled by user")
+            return
+        
+        log.info("Task entering pipeline for file_id=%s", file_id)        
         process_file_in_background(file_id)
+        log.info("Task pipeline finished for file_id=%s", file_id)
         
     except Exception as e:
         log.exception(f"Celery task failed for file_id={file_id}: {e}")

@@ -46,6 +46,22 @@ MSG_START_RE = re.compile(
 KEYWORDS_RE = re.compile(r"(bhk|rent|sale|lease|price|cr\b|lacs?|sqft|carpet|furnished|office|shop|flat|buy|sell|want)", re.IGNORECASE)
 JUNK_RE = re.compile(r"(security code changed|waiting for this message|message was deleted|encrypted|joined|left|added|null|media omitted)", re.IGNORECASE)
 
+#---------------HELPER FUNCS---------------
+
+def _remove_from_active_processing(raw_file_id: int) -> None:
+    active = cache.get("processing_files", [])
+    if raw_file_id in active:
+        active.remove(raw_file_id)
+        cache.set("processing_files", active, timeout=3600)
+        log.info("Removed raw_file_id=%s from active processing list", raw_file_id) 
+
+def _cancel_requested(raw_file_id: int) -> bool:
+    cancel_key = bool(cache.get(f"cancel:{raw_file_id}", False))
+    db_cancelled = RawFile.objects.filter(pk=raw_file_id, status="CANCELLED").exists()
+    cancelled = cancel_key or db_cancelled
+    if cancelled:
+        log.warning("Cancellation requested for raw_file_id=%s (cache=%s db=%s)", raw_file_id, cancel_key, db_cancelled)
+    return cancelled
 
 def _generate_dedupe_hash(cleaned_text: str, sender: str) -> str:
     norm_text = re.sub(r"\s+", "", (cleaned_text or "")).lower()
@@ -230,10 +246,19 @@ def process_file_in_background(raw_file_id: int):
     """
     Orchestrator: Chunk -> ThreadPool
     """
+    raw_file = None
     try:
         raw_file = RawFile.objects.get(pk=raw_file_id)
         file_path = getattr(raw_file.file, "path", None)
-        log.info(f"Starting Multi-Threaded Pipeline for File {raw_file_id}")
+        log.info("Starting Multi-Threaded Pipeline for File %s", raw_file_id)
+
+        if _cancel_requested(raw_file_id):
+            raw_file.status = "CANCELLED"
+            raw_file.notes = "Cancelled by user"
+            raw_file.process_finished_at = timezone.now()
+            raw_file.save(update_fields=["status", "notes", "process_finished_at"])
+            cache.set(f"progress:{raw_file_id}", 0, timeout=3600)
+            return              
 
         if not file_path or not os.path.exists(file_path):
             raw_file.status = "FAILED"
@@ -245,6 +270,7 @@ def process_file_in_background(raw_file_id: int):
         raw_file.process_started_at = timezone.now()
         raw_file.save()
         cache.set(f"progress:{raw_file_id}", 1, timeout=3600)
+        log.info("raw_file_id=%s status=PROCESSING progress=1", raw_file_id)
 
         # 1. Parsing (Main Thread)
         chunk_buffer = []
@@ -260,6 +286,8 @@ def process_file_in_background(raw_file_id: int):
                 should_close = True
 
             for msg_data in stream_chat_messages(f):
+                if _cancel_requested(raw_file_id):
+                    raise RuntimeError("CANCELLED BY USER")
                 rt = msg_data["text"]
                 if not rt or len(rt) < 15 or JUNK_RE.search(rt) or not KEYWORDS_RE.search(rt):
                     continue
@@ -311,6 +339,8 @@ def process_file_in_background(raw_file_id: int):
             future_map = {executor.submit(process_single_llm_batch, b): b for b in llm_batches}
             
             for future in as_completed(future_map):
+                if _cancel_requested(raw_file_id):
+                    raise RuntimeError("CANCELLED BY USER")
                 try:
                     # FIX: Timeout ensures we don't hang forever
                     future.result(timeout=300) 
@@ -328,17 +358,32 @@ def process_file_in_background(raw_file_id: int):
         raw_file.status = "COMPLETED"
         raw_file.processed = True
         raw_file.notes = f"Processed {total_msgs} messages."
+        raw_file.process_finished_at = timezone.now()
         raw_file.save()
         cache.set(f"progress:{raw_file_id}", 100, timeout=3600)
         
-        active = cache.get("processing_files", [])
-        if raw_file_id in active:
-            active.remove(raw_file_id)
-            cache.set("processing_files", active)
+        _remove_from_active_processing(raw_file_id)
 
     except Exception as e:
+        if raw_file is None:
+            log.exception("Orchestrator failed before rawfile lookup for raw_file_id=%s", raw_file_id)
+            return
+        
+        if str(e) == "CANCELLED BY USER" or _cancel_requested(raw_file_id):
+            log.warning("Orchestrator cancelled for raw_file_id=%s", raw_file_id)
+            raw_file.status = "CANCELLED"
+            raw_file.notes = "Cancelled by user"
+            raw_file.process_finished_at = timezone.now()
+            raw_file.save(update_fields=["status", "notes", "process_finished_at"])
+            cache.set(f"progress:{raw_file_id}", 0, timeout=3600)
+            _remove_from_active_processing(raw_file_id)
+            return
+        
+
         log.exception(f"Orchestrator Error: {e}")
         raw_file.status = "FAILED"
         raw_file.notes = str(e)
+        raw_file.process_finished_at = timezone.now()
         raw_file.save()
         cache.set(f"progress:{raw_file_id}", 0)
+        _remove_from_active_processing(raw_file_id)

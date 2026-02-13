@@ -9,7 +9,6 @@
 <style>
     .list-container { max-width: 1100px; margin: 0 auto; padding: 2rem 1rem; }
     h2 { color: white; margin-bottom: 0.5rem; font-size: 2rem; text-align: center; }
-    .subtitle { color: rgba(255,255,255,0.6); text-align: center; font-size: 1rem; margin-bottom: 3rem; }
 
     /* Glass Table */
     .glass-table-wrapper {
@@ -32,16 +31,15 @@
     .badge-processing { background: rgba(99, 102, 241, 0.2);  color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.4); }
     .badge-completed  { background: rgba(74, 222, 128, 0.2);  color: #86efac; border: 1px solid rgba(74, 222, 128, 0.4); }
     .badge-failed     { background: rgba(248, 113, 113, 0.2); color: #fca5a5; border: 1px solid rgba(248, 113, 113, 0.4); }
+    .badge-cancelled  { background: rgba(245, 158, 11, 0.22); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.45); }
 
     /* Progress UI */
-    .progress-cell { min-width: 220px; }
-    .progress-container { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
-    .progress-bar { height: 8px; flex-grow: 1; background: rgba(255,255,255,0.1); border-radius: 6px; overflow: hidden; }
-    .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #0066ff, #00d4ff); transition: width 0.6s ease; }
-    .progress-striped { background-image: linear-gradient(45deg, rgba(255,255,255,0.15) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.15) 50%, rgba(255,255,255,0.15) 75%, transparent 75%, transparent); background-size: 1rem 1rem; animation: progress-bar-stripes 1s linear infinite; }
-    @keyframes progress-bar-stripes { 0% { background-position: 1rem 0; } 100% { background-position: 0 0; } }
-    .progress-text { font-size: 0.85rem; color: rgba(255,255,255,0.9); font-weight: 600; min-width: 35px; text-align: right; }
-    .eta-text { font-size: 0.75rem; color: rgba(255,255,255,0.5); margin-left: 2px; }
+    .progress-cell { min-width: 260px; }
+    .stage-meter { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-bottom: 6px; }
+    .stage-cell { height: 10px; border-radius: 5px; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.12); }
+    .stage-cell.on { background: linear-gradient(90deg, #0066ff, #00d4ff); box-shadow: 0 0 10px rgba(0, 212, 255, 0.45); }
+    .stage-label { font-size: 0.82rem; color: rgba(255,255,255,0.86); font-weight: 600; }
+    .eta-text { font-size: 0.75rem; color: rgba(255,255,255,0.55); margin-left: 2px; }
 
     /* States */
     .completed-check { color: #86efac; font-weight: bold; font-size: 1.1rem; display: flex; align-items: center; gap: 6px; }
@@ -55,20 +53,6 @@
     dialog header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem; }
     .close-modal { background: none; border: none; color: #aaa; font-size: 1.5rem; cursor: pointer; }
     .error-content { background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 6px; font-family: monospace; color: #ddd; max-height: 200px; overflow-y: auto; word-break: break-all; }
-
-    .spinner {
-        border: 2px solid rgba(255,255,255,0.1);
-        border-top: 2px solid #818cf8;
-        border-radius: 50%;
-        width: 16px;
-        height: 16px;
-        animation: spin 1s linear infinite;
-        margin-right: 8px;
-    }
-    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-
-    .pending-state { color: #9ca3af; display: flex; align-items: center; gap: 6px; }
-
 </style>
 
 <div class="list-container">
@@ -81,17 +65,16 @@
                     <th>Status</th>
                     <th>Uploaded (IST)</th>
                     <th>Progress</th>
+                    <th>Action</th>
                 </tr>
             </thead>
             <tbody>
                 {% for file in files %}
                 <tr id="row-{{ file.id }}">
                     <td><strong>{{ file.file_name }}</strong></td>
-                    
+
                     <td>
-                        <span id="badge-{{ file.id }}" class="badge badge-{{ file.status|lower }}">
-                            {{ file.status|capfirst }}
-                        </span>
+                        <span id="badge-{{ file.id }}" class="badge badge-{{ file.status|lower }}">{{ file.status|capfirst }}</span>
                     </td>
 
                     <td style="color: rgba(255,255,255,0.6); font-size: 0.9rem;">
@@ -102,23 +85,19 @@
                     <td class="progress-cell">
                         <div id="wrapper-{{ file.id }}">
                             {% if file.status == "PROCESSING" or file.status == "PENDING" %}
-                                <div class="progress-container">
-                                    <div class="progress-bar">
-                                        <div id="fill-{{ file.id }}" class="progress-fill progress-striped" style="width: 0%"></div>
-                                    </div>
-                                    <span id="text-{{ file.id }}" class="progress-text">0%</span>
+                                <div id="meter-{{ file.id }}" class="stage-meter" data-stage="{{ file.initial_stage|default:1 }}">
+                                    <span class="stage-cell {% if file.initial_stage >= 1 %}on{% endif %}"></span>
+                                    <span class="stage-cell {% if file.initial_stage >= 2 %}on{% endif %}"></span>
+                                    <span class="stage-cell {% if file.initial_stage >= 3 %}on{% endif %}"></span>
+                                    <span class="stage-cell {% if file.initial_stage >= 4 %}on{% endif %}"></span>
+                                    <span class="stage-cell {% if file.initial_stage >= 5 %}on{% endif %}"></span>
                                 </div>
-                                <div id="eta-{{ file.id }}" class="eta-text">
-                                    {% if file.status == "PENDING" %}
-                                        <span class="pending-state"><span class="spinner"></span> Queued...</span>
-                                    {% else %}
-                                        Starting...
-                                    {% endif %}
-                                </div>
-
+                                <div id="text-{{ file.id }}" class="stage-label">{{ file.initial_stage_label|default:"Queued" }}</div>
+                                <div id="eta-{{ file.id }}" class="eta-text">{{ file.initial_stage_label|default:"Queued" }}</div>
                             {% elif file.status == "COMPLETED" %}
                                 <span class="completed-check">✔ Completed</span>
-
+                            {% elif file.status == "CANCELLED" %}
+                                <span class="failed-state">⚠ Cancelled</span>
                             {% elif file.status == "FAILED" %}
                                 <div class="failed-state">
                                     <span>✖ Failed</span>
@@ -126,15 +105,22 @@
                                     <button class="view-error-btn" onclick="showError('{{ file.notes|escapejs }}')">View Error</button>
                                     {% endif %}
                                 </div>
-
                             {% else %}
                                 <span style="color: #666;">Waiting for worker...</span>
                             {% endif %}
                         </div>
                     </td>
+
+                    <td>
+                        {% if file.status == "PENDING" or file.status == "PROCESSING" %}
+                        <button class="view-error-btn" id="cancel-btn-{{ file.id }}" onclick="cancelUpload('{{ file.id }}')">Cancel upload</button>
+                        {% else %}
+                        <span style="color: rgba(255,255,255,0.45);">—</span>
+                        {% endif %}
+                    </td>
                 </tr>
                 {% empty %}
-                <tr><td colspan="4" style="text-align:center; padding: 2rem;">No uploads found.</td></tr>
+                <tr><td colspan="5" style="text-align:center; padding: 2rem;">No uploads found.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -159,113 +145,110 @@
     function closeError() {
         document.getElementById('error-dialog').removeAttribute('open');
     }
+
+    function getCookie(name) {
+        const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+        return match ? decodeURIComponent(match[2]) : null;
+    }
+
+    async function cancelUpload(fileId) {
+        const btn = document.getElementById(`cancel-btn-${fileId}`);
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Cancelling...';
+        }
+
+        console.log(`[cancel] requested file=${fileId}`);
+
+        try {
+            const response = await fetch(`/ingestion/uploads/${fileId}/cancel/`, {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCookie('csrftoken') || '',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+            const data = await response.json();
+            if (!response.ok || !data.ok) {
+                throw new Error(data.error || `HTTP ${response.status}`);
+            }
+
+            const badge = document.getElementById(`badge-${fileId}`);
+            const wrapper = document.getElementById(`wrapper-${fileId}`);
+            if (badge) {
+                badge.className = 'badge badge-cancelled';
+                badge.textContent = 'Cancelled';
+            }
+            if (wrapper) {
+                wrapper.innerHTML = '<span class="failed-state">⚠ Cancelled</span>';
+            }
+            if (btn) btn.remove();
+            console.log(`[cancel] success file=${fileId}`);
+        } catch (error) {
+            console.error(`[cancel] failed file=${fileId}`, error);
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Cancel upload';
+            }
+            alert(`Cancel failed: ${error.message}`);
+        }
+    }
 </script>
 
 <script src="{% static 'js/progress_poller.js' %}"></script>
 <script>
     document.addEventListener("DOMContentLoaded", function() {
-        // 1. Find all active files
         const activeBadges = document.querySelectorAll('.badge-pending, .badge-processing');
-        const activeIds = Array.from(activeBadges).map(badge => {
-            return parseInt(badge.id.replace('badge-', ''));
-        });
+        const activeIds = Array.from(activeBadges).map(badge => parseInt(badge.id.replace('badge-', '')));
 
-        console.log("Active files:", activeIds);
-        
+        console.log("[uploads_list] active ids", activeIds);
         if (activeIds.length === 0) {
-            console.log("No active uploads to track");
+            console.log("[uploads_list] no active uploads");
             return;
         }
 
-        // 2. Progress history for ETA calculation
-        const progressHistory = {};
-
-        // 3. Start poller with custom update logic
         const poller = new ProgressPoller({
             ids: activeIds,
             url: "{% url 'ingestion:progress_status' %}",
             interval: 1500,
-            
             onUpdate: function(files, pollerInstance) {
                 files.forEach(f => {
-                    const fill = document.getElementById("fill-" + f.id);
-                    const text = document.getElementById("text-" + f.id);
-                    const badge = document.getElementById("badge-" + f.id);
-                    const eta = document.getElementById("eta-" + f.id);
-                    const wrapper = document.getElementById("wrapper-" + f.id);
+                    const meter = document.getElementById(`meter-${f.id}`);
+                    const text = document.getElementById(`text-${f.id}`);
+                    const badge = document.getElementById(`badge-${f.id}`);
+                    const eta = document.getElementById(`eta-${f.id}`);
+                    const wrapper = document.getElementById(`wrapper-${f.id}`);
+                    const cancelBtn = document.getElementById(`cancel-btn-${f.id}`);
 
-                    const now = Date.now();
-                    if (!progressHistory[f.id]) progressHistory[f.id] = [];
+                    console.log(`[uploads_list] file=${f.id} status=${f.status} stage=${f.stage} progress=${f.progress}`);
 
-                    console.log(`File ${f.id}: ${f.status} ${f.progress}%`);
-
-                    // Update badge
                     if (badge) {
                         badge.className = `badge badge-${f.status.toLowerCase()}`;
                         badge.textContent = f.status.charAt(0) + f.status.slice(1).toLowerCase();
                     }
 
-                    // Update progress bars (for PROCESSING/PENDING)
-                    if ((f.status === "PROCESSING" || f.status === "PENDING") && fill && text) {
-                        fill.style.width = `${f.progress}%`;
-                        text.textContent = `${f.progress}%`;
-
-                        // Record progress history
-                        const lastEntry = progressHistory[f.id][progressHistory[f.id].length - 1];
-                        if (!lastEntry || lastEntry.prog !== f.progress) {
-                            progressHistory[f.id].push({ time: now, prog: f.progress });
-                            
-                            // Keep only last 10 points
-                            if (progressHistory[f.id].length > 10) {
-                                progressHistory[f.id].shift();
-                            }
-                        }
-
-                        // Calculate ETA
-                        if (eta) {
-                            if (f.status === "PENDING") {
-                                eta.innerHTML = '<span class="pending-state"><span class="spinner"></span> Queued...</span>';
-                            } else if (progressHistory[f.id].length > 1 && f.progress > 0 && f.progress < 100) {
-                                const hist = progressHistory[f.id];
-                                const timeDiff = (now - hist[0].time) / 1000; // seconds
-                                const progDiff = f.progress - hist[0].prog;
-
-                                if (progDiff > 0 && timeDiff > 0) {
-                                    const speed = progDiff / timeDiff;
-                                    const remaining = 100 - f.progress;
-                                    const etaSec = Math.round(remaining / speed);
-                                    
-                                    if (etaSec < 3600) {
-                                        const min = Math.floor(etaSec / 60);
-                                        const sec = etaSec % 60;
-                                        eta.textContent = min > 0 ? `ETA: ~${min}m ${sec}s` : `ETA: ~${sec}s`;
-                                    } else {
-                                        eta.textContent = "Processing...";
-                                    }
-                                } else {
-                                    eta.textContent = "Calculating...";
-                                }
-                            } else {
-                                eta.textContent = "Starting...";
-                            }
-                        }
+                    if ((f.status === "PROCESSING" || f.status === "PENDING") && meter) {
+                        const stage = Math.max(0, Math.min(5, f.stage || 0));
+                        const cells = meter.querySelectorAll('.stage-cell');
+                        cells.forEach((cell, idx) => cell.classList.toggle('on', idx < stage));
                     }
 
-                    // Handle completion
+                    if (text) text.textContent = f.stage_label || f.status;
+                    if (eta) eta.textContent = f.status === "PROCESSING" ? `Internal progress: ${f.progress}%` : (f.stage_label || f.status);
+
                     if (f.status === "COMPLETED") {
-                        if (wrapper) {
-                            wrapper.innerHTML = '<span class="completed-check">✔ Completed</span>';
-                        }
+                        if (wrapper) wrapper.innerHTML = '<span class="completed-check">✔ Completed</span>';
+                        if (cancelBtn) cancelBtn.remove();
                         pollerInstance.completedIds.add(f.id);
-                    }
-                    
-                    // Handle failure
-                    if (f.status === "FAILED") {
+                    } else if (f.status === "FAILED") {
                         const errorMsg = (f.error || "").replace(/'/g, "\\'");
                         const btn = errorMsg ? `<button class="view-error-btn" onclick="showError('${errorMsg}')">View Error</button>` : "";
-                        if (wrapper) {
-                            wrapper.innerHTML = `<div class="failed-state"><span>✖ Failed</span>${btn}</div>`;
-                        }
+                        if (wrapper) wrapper.innerHTML = `<div class="failed-state"><span>✖ Failed</span>${btn}</div>`;
+                        if (cancelBtn) cancelBtn.remove();
+                        pollerInstance.completedIds.add(f.id);
+                    } else if (f.status === "CANCELLED") {
+                        if (wrapper) wrapper.innerHTML = '<span class="failed-state">⚠ Cancelled</span>';
+                        if (cancelBtn) cancelBtn.remove();
                         pollerInstance.completedIds.add(f.id);
                     }
                 });

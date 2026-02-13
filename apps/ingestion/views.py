@@ -1,15 +1,14 @@
 # apps/ingestion/views.py
-import os
-import magic
 import logging
-import uuid
 
-from django.shortcuts import render, redirect
-from django.utils import timezone
-from django.core.cache import cache
-from django.http import JsonResponse
+import magic
 from django.contrib.auth.decorators import login_required
+from django.core.cache import cache
 from django.db import transaction
+from django.http import JsonResponse
+from django.shortcuts import redirect, render
+from django.utils import timezone
+from django.views.decorators.cache import never_cache
 
 from .forms import MultiTxtUploadForm
 from .models import RawFile
@@ -17,64 +16,109 @@ from .tasks import process_file_task
 
 log = logging.getLogger(__name__)
 
+
+def _progress_payload_for_file(raw_file):
+    if raw_file.status == "COMPLETED":
+        progress = 100
+    elif raw_file.status in {"FAILED", "CANCELLED"}:
+        progress = 0
+    else:
+        progress = int(cache.get(f"progress:{raw_file.id}", 0) or 0)
+        if raw_file.status == "PROCESSING" and progress == 0:
+            progress = 5
+
+    if raw_file.status == "PENDING":
+        stage = 1
+        stage_label = "Queued"
+    elif raw_file.status == "PROCESSING":
+        if progress < 25:
+            stage, stage_label = 2, "Parsing"
+        elif progress < 85:
+            stage, stage_label = 3, "Extracting"
+        else:
+            stage, stage_label = 4, "Finalizing"
+    elif raw_file.status == "COMPLETED":
+        stage, stage_label = 5, "Completed"
+    elif raw_file.status == "CANCELLED":
+        stage, stage_label = 0, "Cancelled"
+    else:
+        stage, stage_label = 0, "Failed"
+
+    payload = {
+        "id": raw_file.id,
+        "progress": progress,
+        "status": raw_file.status,
+        "stage": stage,
+        "stage_label": stage_label,
+        "error": raw_file.notes,
+    }
+    log.debug("progress payload generated: %s", payload)
+    return payload
+
+
 @login_required
 def upload_redirect(request):
-    return redirect('upload_files')
+    log.info("upload_redirect user_id=%s", request.user.id)
+    return redirect("upload_files")
 
 
 @login_required
 def upload_success(request):
     uploaded_files = request.session.get("uploaded_files", [])
     processing_files = request.session.get("processing_files", [])
+    log.info(
+        "upload_success view user_id=%s uploaded=%s processing_ids=%s",
+        request.user.id,
+        len(uploaded_files),
+        processing_files,
+    )
 
-    return render(request, "ingestion/upload_success.html", {
-        "uploaded_files": uploaded_files,
-        "processing_files": processing_files,  # now contains IDs, not names
-    })
+    return render(
+        request,
+        "ingestion/upload_success.html",
+        {
+            "uploaded_files": uploaded_files,
+            "processing_files": processing_files,
+        },
+    )
 
 
 @login_required
 def upload_files(request):
-    """
-    Fire-and-forget upload view.
-    Refactored to fix race conditions and loop variable capture bugs.
-    """
     if request.method == "POST":
         files = request.FILES.getlist("files")
+        log.info("upload_files POST user_id=%s file_count=%s", request.user.id, len(files))
+
         errors = []
         created = []
-
-        uploaded_files = []
+        uploaded_files = [file.name for file in files]
         processing_ids = []
-
-        # Pre-fill uploaded filenames for the session
-        for file in files:
-            uploaded_files.append(file.name)
-
         request.session["uploaded_files"] = uploaded_files
 
         for f in files:
             name_lower = f.name.lower()
             ext_ok = name_lower.endswith(".txt")
-
-            # Optional mime check
             mime_ok = True
+            mime = "unknown"
+
             try:
                 blob = f.read(2048)
                 f.seek(0)
                 mime = magic.from_buffer(blob, mime=True)
                 if "text" not in mime and "plain" not in mime and not ext_ok:
                     mime_ok = False
+                log.info("file validation file=%s mime=%s ext_ok=%s mime_ok=%s", f.name, mime, ext_ok, mime_ok)
             except Exception:
-                mime = "unknown"
+                log.exception("mime detection failed file=%s", f.name)
 
             if not ext_ok and not mime_ok:
-                errors.append(f"{f.name}: not a .txt file (mime={mime})")
+                err = f"{f.name}: not a .txt file (mime={mime})"
+                log.warning(err)
+                errors.append(err)
                 continue
 
             try:
                 with transaction.atomic():
-                    # 1. Create the DB row
                     rf = RawFile.objects.create(
                         file=f,
                         file_name=f.name,
@@ -84,106 +128,129 @@ def upload_files(request):
                     )
                     created.append(rf)
                     processing_ids.append(rf.id)
-                    
-                    log.info(f"✅ Created RawFile record: id={rf.id}, name={rf.file_name}")
-
-                    # 2. Update Cache (Progress tracking)
                     cache.set(f"progress:{rf.id}", 0, timeout=3600)
-                    log.info(f"✅ Set cache progress:{rf.id} = 0")
+                    cache.set(f"cancel:{rf.id}", False, timeout=3600)
 
                     active = cache.get("processing_files", [])
                     if rf.id not in active:
                         active.append(rf.id)
                         cache.set("processing_files", active, timeout=3600)
-                    
-                    log.info(f"✅ Updated processing_files cache: {active}")
 
-                # 3. Schedule Task OUTSIDE atomic block (important!)
-                # This ensures DB commit happens before task dispatch
+                    log.info("raw file created id=%s name=%s active_ids=%s", rf.id, rf.file_name, active)
+
                 def schedule_task(file_id):
-                    log.info(f"🚀 Attempting to queue task for file_id={file_id}")
-                    try:
-                        result = process_file_task.delay(file_id)
-                        log.info(f"✅ Task queued successfully: task_id={result.id}, file_id={file_id}")
-                        return result
-                    except Exception as e:
-                        log.error(f"❌ Failed to queue task for file_id={file_id}: {e}", exc_info=True)
-                        raise
-                
+                    log.info("queueing celery task file_id=%s", file_id)
+                    result = process_file_task.delay(file_id)
+                    log.info("task queued file_id=%s task_id=%s", file_id, result.id)
+                    return result
+
                 transaction.on_commit(lambda fid=rf.id: schedule_task(fid))
-                log.info(f"✅ Registered on_commit callback for file_id={rf.id}")
+                log.info("on_commit callback registered file_id=%s", rf.id)
 
-            except Exception as e:
-                log.exception(f"❌ Failed to save or schedule file {f.name}")
-                errors.append(f"{f.name}: Internal Error - {str(e)}")
+            except Exception as exc:
+                log.exception("failed to save/schedule file=%s", f.name)
+                errors.append(f"{f.name}: Internal Error - {exc}")
 
-        # Update session with final lists
         request.session["uploaded_files"] = uploaded_files
         request.session["processing_files"] = processing_ids
-        
-        log.info(f"📋 Session updated: {len(processing_ids)} files queued")
+        log.info("session updated uploaded=%s processing_ids=%s", uploaded_files, processing_ids)
 
         return redirect("ingestion:upload_success") if not errors else render(
             request,
             "ingestion/upload_success.html",
-            {"errors": errors, "created": created}
+            {"errors": errors, "created": created},
         )
 
-    # GET request handling
+    log.info("upload_files GET user_id=%s", request.user.id)
     form = MultiTxtUploadForm()
     return render(request, "ingestion/upload_form.html", {"form": form})
 
-    
+
 @login_required
+@never_cache
 def progress_status(request):
-    """
-    Returns progress for specific file IDs provided in the GET param 'ids'.
-    Example: /ingestion/progress/?ids=1,2,3
-    """
-    ids_param = request.GET.get('ids', '')
-    
+    ids_param = request.GET.get("ids", "")
+    log.info("progress_status user_id=%s ids_param=%s", request.user.id, ids_param)
+
     if not ids_param:
-        return JsonResponse({"files": []})
+        response = JsonResponse({"files": []})
+        response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response["Pragma"] = "no-cache"
+        response["Expires"] = "0"
+        return response
 
     try:
-        # Parse "1,2,3" into [1, 2, 3]
-        target_ids = [int(x) for x in ids_param.split(',') if x.isdigit()]
+        target_ids = [int(x) for x in ids_param.split(",") if x.isdigit()]
     except ValueError:
+        log.warning("progress_status invalid ids_param=%s", ids_param)
         return JsonResponse({"files": []}, status=400)
 
-    # Fetch DB objects (Source of Truth)
     files_qs = RawFile.objects.filter(pk__in=target_ids)
-    
+    files_by_id = {raw_file.id: raw_file for raw_file in files_qs}
+
     result = []
-    for f in files_qs:
-        # 1. Check DB Status first (Ultimate truth)
-        if f.status == "COMPLETED":
-            prog = 100
-        elif f.status == "FAILED":
-            prog = 0
-        else:
-            # 2. If running, check Cache for granular 0-99%
-            # We use the DB cache backend we set up earlier
-            prog = cache.get(f"progress:{f.id}", 0)
-            
-            # Sanity check: If status is PROCESSING but cache is empty/0, 
-            # show at least 5% so user knows it's alive.
-            if f.status == "PROCESSING" and prog == 0:
-                prog = 5
+    for file_id in target_ids:
+        raw_file = files_by_id.get(file_id)
+        if not raw_file:
+            log.warning("progress_status requested missing file_id=%s", file_id)
+            continue
+        result.append(_progress_payload_for_file(raw_file))
 
-        result.append({
-            "id": f.id,
-            "progress": prog,
-            "status": f.status,
-            "error": f.notes
-        })
+    response = JsonResponse({"files": result})
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
+    log.info("progress_status response_count=%s ids=%s", len(result), target_ids)
+    return response
 
-    return JsonResponse({"files": result})
+
+@login_required
+def cancel_upload(request, file_id):
+    if request.method != "POST":
+        log.warning("cancel_upload non-post user_id=%s file_id=%s", request.user.id, file_id)
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        raw_file = RawFile.objects.get(pk=file_id)
+    except RawFile.DoesNotExist:
+        log.warning("cancel_upload missing file user_id=%s file_id=%s", request.user.id, file_id)
+        return JsonResponse({"error": "File not found"}, status=404)
+
+    if raw_file.owner_id and raw_file.owner_id != request.user.id:
+        log.warning("cancel_upload forbidden user_id=%s file_id=%s owner_id=%s", request.user.id, file_id, raw_file.owner_id)
+        return JsonResponse({"error": "Forbidden"}, status=403)
+
+    if raw_file.status in {"COMPLETED", "FAILED", "CANCELLED"}:
+        payload = _progress_payload_for_file(raw_file)
+        log.info("cancel_upload ignored terminal status=%s file_id=%s", raw_file.status, raw_file.id)
+        return JsonResponse({"ok": True, "file": payload})
+
+    raw_file.status = "CANCELLED"
+    raw_file.process_finished_at = timezone.now()
+    raw_file.notes = "Cancelled by user"
+    raw_file.save(update_fields=["status", "process_finished_at", "notes"])
+
+    cache.set(f"cancel:{raw_file.id}", True, timeout=3600)
+    cache.set(f"progress:{raw_file.id}", 0, timeout=3600)
+
+    active = cache.get("processing_files", [])
+    if raw_file.id in active:
+        active.remove(raw_file.id)
+        cache.set("processing_files", active, timeout=3600)
+
+    payload = _progress_payload_for_file(raw_file)
+    log.info("cancel_upload success user_id=%s file_id=%s", request.user.id, raw_file.id)
+    return JsonResponse({"ok": True, "file": payload})
 
 
 @login_required
 def uploads_list(request):
-    from .models import RawFile
     files = RawFile.objects.order_by("-uploaded_at")
-    return render(request, "ingestion/uploads_list.html", {"files": files})
+    for file in files:
+        payload = _progress_payload_for_file(file)
+        file.initial_progress = payload["progress"]
+        file.initial_stage = payload["stage"]
+        file.initial_stage_label = payload["stage_label"]
 
+    log.info("uploads_list user_id=%s total_files=%s", request.user.id, len(files))
+    return render(request, "ingestion/uploads_list.html", {"files": files})
