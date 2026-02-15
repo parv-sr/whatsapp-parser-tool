@@ -211,6 +211,12 @@ if not os.path.exists(MEDIA_ROOT):
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+OPENAI_CHAT_MODELS = [
+    "gpt-4o-mini",
+    "gpt-4o",
+    "gpt-4.1-mini",
+]
+
 
 # --- SECURITY & HTTPS ---
 

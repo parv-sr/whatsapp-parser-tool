@@ -185,6 +185,24 @@
         filter: brightness(1.2);
     }
 
+    .model-select {
+        border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(255,255,255,0.06);
+        color: #e5e7eb;
+        border-radius: 999px;
+        padding: 0.35rem 0.75rem;
+        font-size: 0.8rem;
+        min-width: 130px;
+    }
+
+    .model-select:focus { outline: none; border-color: var(--pico-primary); }
+
+    .status-pill {
+        color: #9ca3af;
+        font-size: 0.75rem;
+        margin-left: 0.5rem;
+    }
+
     .send-btn svg {
         width: 20px;
         height: 20px;
@@ -246,7 +264,13 @@
 
 <div id="chat-input-bar">
     <form id="chat-form">
+        <select id="model-select" class="model-select" aria-label="Model selector">
+            {% for model in available_models %}
+            <option value="{{ model }}" {% if model == default_model %}selected{% endif %}>{{ model }}</option>
+            {% endfor %}
+        </select>
         <input type="text" id="chat-input" placeholder="Ask about properties…" required autocomplete="off">
+        <small id="chat-status" class="status-pill">ready</small>
         <button type="submit" class="send-btn">
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
         </button>
@@ -279,6 +303,8 @@
     const chatForm = document.getElementById("chat-form");
     const chatInput = document.getElementById("chat-input");
     const modal = document.getElementById("source-modal");
+    const modelSelect = document.getElementById("model-select");
+    const chatStatus = document.getElementById("chat-status");
 
     // --- Modal Functions ---
     function closeSourceModal() {
@@ -379,22 +405,26 @@
         chatWindow.scrollTop = chatWindow.scrollHeight;
 
         try {
+            chatStatus.textContent = "thinking…";
+            const selectedModel = modelSelect.value;
             const res = await fetch("/core/chat/query/", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
                     "X-CSRFToken": "{{ csrf_token }}"
                 },
-                body: JSON.stringify({ query: question, top_k: 5 })
+                body: JSON.stringify({ query: question, top_k: 8, model: selectedModel })
             });
 
             const data = await res.json();
-            let answer = data.answer || "⚠️ Error retrieving response.";
+            let answer = data.answer || "Error retrieving response.";
 
             chatWindow.appendChild(formatMessage("assistant", answer));
+            chatStatus.textContent = `model: ${data.model || selectedModel}`;
             // saveMessage("assistant", answer); 
         } catch (err) {
-            chatWindow.appendChild(formatMessage("assistant", "⚠️ Connection error."));
+            chatWindow.appendChild(formatMessage("assistant", "Connection error."));
+            chatStatus.textContent = "request failed";
         }
 
         chatWindow.scrollTop = chatWindow.scrollHeight;

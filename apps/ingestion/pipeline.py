@@ -188,9 +188,9 @@ def process_single_llm_batch(batch_data):
                     composite_key=composite_key,
                     composite_hash=composite_hash,
                     metadata=listing_data.model_dump(exclude={"cleaned_text"}),
-                    intent="LISTING" if listing_data.listing_type in ["RENT", "SALE"] else "REQUIREMENT",
+                    intent="LISTING" if listing_data.listing_type in ["RENT","LEASE", "SALE", "OWNERSHIP"] else "REQUIREMENT",
                     category=listing_data.property_type,
-                    transaction_type=listing_data.listing_type,
+                    transaction_type="SALE" if listing_data.listing_type == "OWNERSHIP" else listing_data.listing_type,
                     confidence=0.9,
                     status="ACTIVE"
                 )

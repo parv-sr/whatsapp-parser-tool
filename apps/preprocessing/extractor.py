@@ -27,8 +27,8 @@ MAX_CONCURRENT_PACKETS = 3 # Process 3 packets (45 messages) concurrently per wo
 # --- Pydantic Schemas ---
 class PropertyListing(BaseModel):
     cleaned_text: str = Field(..., description="A single, concise sentence summarizing the listing. Remove emojis, agent names, and fluff. Example: '2 BHK fully furnished flat for rent in Bandra West, price 85k.'")
-    listing_type: Literal['RENT', 'SALE', 'REQUIREMENT', 'UNKNOWN'] = Field(..., description="Is this for rent, sale, or a requirement?")
-    property_type: Literal['RESIDENTIAL', 'COMMERCIAL', 'PLOT', 'UNKNOWN'] = Field(..., description="Type of property.")
+    listing_type: Literal['RENT', 'LEASE', 'SALE', 'OWNERSHIP', 'REQUIREMENT', 'UNKNOWN'] = Field(..., description="Is this for rent, sale, or a requirement?")
+    property_type: Literal['RESIDENTIAL', 'COMMERCIAL', 'PLOT', 'LAND', 'UNKNOWN'] = Field(..., description="Type of property.")
     location: str = Field(..., description="Specific locality (e.g., 'Pali Hill', 'BKC'). Do not include 'Mumbai'.")
     building_name: Optional[str] = Field(None, description="Name of the building, project, or society.")
     bhk: Optional[float] = Field(None, description="Number of bedrooms. Use 0.5 for RK/Studio.")
@@ -43,6 +43,25 @@ class PropertyListing(BaseModel):
     contact_numbers: List[str] = Field(default_factory=list, description="Extracted phone numbers.")
 
     # --- VALIDATORS TO PREVENT DATA LOSS ---
+
+    @field_validator('listing_type', mode='before')
+    @classmethod
+    def normalize_listing_type(cls, v):
+        if not v:
+            return "UNKNOWN"
+        s = str(v).upper().strip()
+        if s in {"OWNERSHIP", "OWN"}:
+            return "OWNERSHIP"
+        if "LEASE" in s or "LICENSE" in s:
+            return "LEASE"
+        if "RENT" in s:
+            return "RENT"
+        if "SALE" in s or "BUY" in s or "SELL" in s:
+            return "SALE"
+        if "REQUIRE" in s:
+            return "REQUIREMENT"
+        return "UNKNOWN"
+
 
     @field_validator('location', mode='before')
     @classmethod
@@ -113,6 +132,7 @@ async def _process_packet(messages: List[str], start_global_idx: int, semaphore:
             "1. If a message has NO listing, set `is_irrelevant: true`.\n"
             "2. If a message has multiple listings, include them in the `listings` array.\n"
             "3. Normalize prices (1.5 Cr -> 15000000).\n"
+            "3a. STRICTLY distinguish RENT  vs LEASE vs SALE/OWNERSHIP based on phrasing.\n"
             "4. `message_index` in output MUST match the 'Message X' number provided (0, 1, 2...).\n"
             "Schema: " + json.dumps(BatchItemResult.model_json_schema())
         )
