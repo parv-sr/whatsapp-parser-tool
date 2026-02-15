@@ -2,277 +2,131 @@
 {% block title %}AI Chat{% endblock %}
 
 {% block content %}
-
 <style>
-    /* --- 1. PAGE LAYOUT --- */
-    body {
-        overflow: hidden !important;
-        height: 100vh;
-    }
+    body { overflow: hidden !important; height: 100vh; }
+    main.container { height: 100%; max-width: 100% !important; padding: 0 !important; display: flex; flex-direction: column; }
 
-    main.container {
-        height: 100%;
-        max-width: 100% !important;
-        padding: 0 !important;
-        display: flex;
-        flex-direction: column;
-    }
-
-    /* --- 2. CHAT WRAPPER --- */
-    #chat-wrapper {
-        display: flex;
-        flex-direction: column;
-        flex-grow: 1;
-        width: 100%;
-        max-width: 1000px;
-        margin: 0 auto;
-        position: relative;
-        height: 100%;
-    }
-
-    /* --- 3. CHAT WINDOW (FIXED BOTTOM SCROLL) --- */
+    #chat-wrapper { display: flex; flex-direction: column; flex: 1; width: 100%; max-width: 1100px; margin: 0 auto; }
     #chat-window {
-        flex-grow: 1;
+        flex: 1;
         overflow-y: auto;
-        
-        /* Top padding for header clearance */
-        padding-top: 6rem; 
-        padding-left: 1rem;
-        padding-right: 1rem;
-        
-        /* We remove padding-bottom here and use the ::after pseudo-element below 
-           This is a robust fix for Chrome/Safari scrolling issues */
-        padding-bottom: 0; 
-
-        scroll-behavior: smooth;
+        padding: 1.2rem 1rem 10rem;
         scrollbar-width: thin;
-        scrollbar-color: rgba(255,255,255,0.1) transparent;
+        scrollbar-color: rgba(255,255,255,0.2) transparent;
     }
 
-    /* THE MAGIC FIX: This creates a solid invisible block at the bottom */
-    #chat-window::after {
-        content: "";
-        display: block;
-        height: 15rem; /* Creates exactly enough scrollable space */
-        width: 100%;
-    }
-
-    /* --- 4. MESSAGE BUBBLES --- */
     .msg {
-        max-width: 80%;
-        padding: 0.6rem 1rem; 
-        margin-bottom: 0.8rem;
+        max-width: min(900px, 92%);
+        padding: .8rem 1rem;
+        margin-bottom: .9rem;
         border-radius: 16px;
-        position: relative;
-        animation: slideUp 0.3s cubic-bezier(0.25, 1, 0.5, 1);
         line-height: 1.5;
-        font-size: 0.9rem; 
+        font-size: .92rem;
         word-break: break-word;
-        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255,255,255,0.08);
+        animation: slideUp .18s ease-out;
     }
-
-    @keyframes slideUp {
-        from { opacity: 0; transform: translateY(20px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
-
+    @keyframes slideUp { from {opacity: 0; transform: translateY(8px);} to {opacity: 1; transform: translateY(0);} }
     .user-msg {
-        background: linear-gradient(135deg, var(--pico-primary) 0%, #2f5769 100%);
-        color: white;
         margin-left: auto;
-        border-bottom-right-radius: 4px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-        border: 1px solid rgba(255,255,255,0.1);
+        background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
+        color: white;
+        border-bottom-right-radius: 6px;
     }
-
     .assistant-msg {
-        background: rgba(0, 0, 0, 0.4);
-        color: #e0e0e0;
         margin-right: auto;
-        border-bottom-left-radius: 4px;
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        width: fit-content;
-        max-width: 95%; /* Allow tables to expand */
+        background: rgba(9, 14, 24, 0.86);
+        border-bottom-left-radius: 6px;
+        color: #e8ecf3;
     }
 
-    /* --- 5. TABLE STYLING --- */
-    .msg table {
-        display: block;
-        overflow-x: auto;
-        width: 100%;
-        border-collapse: separate;
-        border-spacing: 0;
-        margin: 0.5rem 0 0.2rem 0;
-        background: rgba(0,0,0,0.3);
-        border-radius: 8px;
-        border: 1px solid rgba(255,255,255,0.05);
-    }
+    .msg h3, .msg h4 { margin: .35rem 0 .4rem; color: #dbeafe; }
+    .msg ul { margin: .2rem 0 .6rem 1.1rem; }
 
-    .user-msg table { background: rgba(0,0,0,0.1); color: white; }
+    .msg table { width: 100%; display: block; overflow-x: auto; border-collapse: collapse; margin-top: .5rem; }
+    .msg th, .msg td { padding: .48rem .65rem; white-space: nowrap; border-bottom: 1px solid rgba(255,255,255,0.07); }
+    .msg th { background: rgba(0,0,0,.35); color: #93c5fd; text-transform: uppercase; font-size: .76rem; }
 
-    .msg th, .msg td {
-        white-space: nowrap;
-        padding: 0.5rem 0.8rem;
-        border-bottom: 1px solid rgba(255,255,255,0.05);
-        text-align: left;
-        font-size: 0.85rem;
-    }
-
-    .msg th {
-        background: rgba(0,0,0,0.2);
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        color: rgba(255,255,255,0.6);
-    }
-    .msg tr:last-child td { border-bottom: none; }
-
-    /* --- 6. FLOATING INPUT BAR --- */
     #chat-input-bar {
         position: fixed;
-        bottom: 30px;
         left: 50%;
+        bottom: 22px;
         transform: translateX(-50%);
-        width: 90%;
-        max-width: 800px;
-        z-index: 1000;
-        background: transparent !important;
+        width: min(1050px, 96%);
+        z-index: 100;
     }
 
     #chat-form {
-        display: flex;
+        display: grid;
+        grid-template-columns: minmax(140px, 190px) 1fr auto auto;
+        gap: .55rem;
         align-items: center;
-        gap: 10px;
-        padding: 6px 6px 6px 20px;
-        background: rgba(0, 0, 0, 0.5); 
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 100px;
-        box-shadow: 0 5px 20px rgba(0,0,0,0.2); 
+        padding: .55rem;
+        border-radius: 16px;
+        background: rgba(7, 12, 22, .92);
+        border: 1px solid rgba(255,255,255,.12);
+        box-shadow: 0 12px 40px rgba(0,0,0,.36);
+        backdrop-filter: blur(14px);
+    }
+
+    .control {
+        height: 42px;
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,.16);
+        background: rgba(255,255,255,.04);
+        color: #e2e8f0;
+        padding: 0 .75rem;
     }
 
     #chat-input {
-        flex: 1;
-        border: none !important;
-        background: transparent !important;
-        color: white !important;
-        font-size: 0.95rem;
-        padding: 5px;
-        outline: none !important;
-        box-shadow: none !important;
+        width: 100%;
+        height: 42px;
+        min-width: 0;
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,.18);
+        background: rgba(255,255,255,.03);
+        color: #fff;
+        padding: 0 .9rem;
     }
-    
-    #chat-input::placeholder { color: rgba(255,255,255,0.4); }
+    #chat-input::placeholder { color: rgba(255,255,255,.45); }
+
+    #chat-status { color: #93a4ba; font-size: .8rem; min-width: 86px; text-align: right; }
 
     .send-btn {
-        width: 45px !important;
-        height: 45px !important;
-        border-radius: 50%;
-        background: var(--pico-primary-background);
-        border: none;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: all 0.2s ease;
+        width: 42px; height: 42px; border-radius: 999px; border: none;
+        display: grid; place-items: center;
+        background: linear-gradient(120deg, #0ea5e9, #2563eb);
         cursor: pointer;
-        flex-shrink: 0;
-        padding: 0;
     }
+    .send-btn svg { width: 18px; height: 18px; fill: white; margin-left: 1px; }
 
-    .send-btn:hover {
-        transform: scale(1.05);
-        filter: brightness(1.2);
-    }
-
-    .model-select {
-        border: 1px solid rgba(255,255,255,0.12);
-        background: rgba(255,255,255,0.06);
-        color: #e5e7eb;
-        border-radius: 999px;
-        padding: 0.35rem 0.75rem;
-        font-size: 0.8rem;
-        min-width: 130px;
-    }
-
-    .model-select:focus { outline: none; border-color: var(--pico-primary); }
-
-    .status-pill {
-        color: #9ca3af;
-        font-size: 0.75rem;
-        margin-left: 0.5rem;
-    }
-
-    .send-btn svg {
-        width: 20px;
-        height: 20px;
-        fill: white !important;
-        margin-left: 2px;
-    }
-
-    /* --- 7. SOURCE MODAL --- */
     .source-btn {
-        background: rgba(56, 189, 248, 0.15);
-        color: #38bdf8;
-        border: 1px solid rgba(56, 189, 248, 0.3);
-        padding: 4px 10px;
-        border-radius: 6px;
-        font-size: 0.75rem;
-        cursor: pointer;
-        transition: all 0.2s;
-        text-decoration: none;
-        display: inline-block;
-        white-space: nowrap;
-    }
-    .source-btn:hover {
-        background: rgba(56, 189, 248, 0.3);
-        border-color: #38bdf8;
-        color: white;
+        background: rgba(14, 165, 233, 0.14); color: #38bdf8; border: 1px solid rgba(56,189,248,.4);
+        padding: 4px 10px; border-radius: 8px; font-size: .74rem; cursor: pointer;
     }
 
-    dialog article {
-        background: rgba(20, 25, 35, 0.95) !important;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        backdrop-filter: blur(20px);
-        max-width: 800px;
-        width: 100%;
-        color: white;
-    }
-    
-    dialog header {
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        margin-bottom: 1rem;
-    }
+    dialog article { background: rgba(20,25,35,0.96) !important; color: #f8fafc; border: 1px solid rgba(255,255,255,.15); }
+    .raw-msg-box { max-height: 50vh; overflow: auto; padding: .8rem; background: rgba(0,0,0,.33); border-radius: 8px; }
 
-    .raw-msg-box {
-        background: rgba(0,0,0,0.3);
-        padding: 1rem;
-        border-radius: 8px;
-        font-family: monospace;
-        font-size: 0.85rem;
-        white-space: pre-wrap;
-        color: #a0a0a0;
-        max-height: 50vh;
-        overflow-y: auto;
-        border: 1px solid rgba(255,255,255,0.05);
+    @media (max-width: 760px) {
+        #chat-form { grid-template-columns: 1fr auto; }
+        #model-select, #chat-status { grid-column: span 1; }
     }
 </style>
 
-<div id="chat-wrapper">
-    <div id="chat-window"></div>
-</div>
+<div id="chat-wrapper"><div id="chat-window"></div></div>
 
 <div id="chat-input-bar">
     <form id="chat-form">
-        <select id="model-select" class="model-select" aria-label="Model selector">
+        <select id="model-select" class="control" aria-label="Model selector">
             {% for model in available_models %}
             <option value="{{ model }}" {% if model == default_model %}selected{% endif %}>{{ model }}</option>
             {% endfor %}
         </select>
-        <input type="text" id="chat-input" placeholder="Ask about properties…" required autocomplete="off">
-        <small id="chat-status" class="status-pill">ready</small>
-        <button type="submit" class="send-btn">
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
+        <input type="text" id="chat-input" placeholder="Ask about rent/lease/sale listings in your uploaded chats..." required autocomplete="off">
+        <small id="chat-status">Ready</small>
+        <button type="submit" class="send-btn" aria-label="Send">
+            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
         </button>
     </form>
 </div>
@@ -281,118 +135,137 @@
     <article>
         <header>
             <button aria-label="Close" rel="prev" onclick="closeSourceModal()"></button>
-            <h3 id="modal-title">Original Message</h3>
+            <h3>Original Message</h3>
         </header>
-        <p style="font-size: 0.9rem; color: #888; margin-bottom: 0.5rem;">
-            Sender: <span id="modal-sender" style="color:white"></span> | 
-            Time: <span id="modal-time" style="color:white"></span>
-        </p>
+        <p style="font-size:0.9rem;color:#94a3b8;margin-bottom:.5rem;">Sender: <span id="modal-sender" style="color:white"></span> | Time: <span id="modal-time" style="color:white"></span></p>
         <pre id="modal-content" class="raw-msg-box">Loading...</pre>
     </article>
 </dialog>
 
 {{ history|json_script:"chat-history" }}
-
-<script>
-    const serverHistory = JSON.parse(document.getElementById("chat-history").textContent);
-</script>
-
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
+    const serverHistory = JSON.parse(document.getElementById("chat-history").textContent);
     const chatWindow = document.getElementById("chat-window");
     const chatForm = document.getElementById("chat-form");
     const chatInput = document.getElementById("chat-input");
-    const modal = document.getElementById("source-modal");
     const modelSelect = document.getElementById("model-select");
     const chatStatus = document.getElementById("chat-status");
+    const modal = document.getElementById("source-modal");
 
-    // --- Modal Functions ---
-    function closeSourceModal() {
-        modal.removeAttribute("open");
-    }
+    function closeSourceModal() { modal.removeAttribute("open"); }
 
     async function openSourceModal(listingId) {
         modal.setAttribute("open", true);
         document.getElementById("modal-content").textContent = "Loading original message...";
-        document.getElementById("modal-sender").textContent = "...";
-        document.getElementById("modal-time").textContent = "...";
-
         try {
             const res = await fetch(`/core/chat/source/${listingId}/`);
-            if (!res.ok) throw new Error("Failed to fetch");
+            if (!res.ok) throw new Error("Fetch failed");
             const data = await res.json();
-            
-            document.getElementById("modal-content").textContent = data.raw_text;
-            document.getElementById("modal-sender").textContent = data.sender;
+            document.getElementById("modal-content").textContent = data.raw_text || "N/A";
+            document.getElementById("modal-sender").textContent = data.sender || "Unknown";
             document.getElementById("modal-time").textContent = data.timestamp || "N/A";
-        } catch (e) {
-            document.getElementById("modal-content").textContent = "Error loading source message. It may have been deleted.";
+        } catch {
+            document.getElementById("modal-content").textContent = "Error loading source message.";
         }
     }
 
-    // --- Chat Functions ---
-
-    function saveMessage(role, text) {
-        const history = JSON.parse(localStorage.getItem("chatHistory") || "[]");
-        history.push({ role, text });
-        localStorage.setItem("chatHistory", JSON.stringify(history));
+    function enhanceSourceButtons(root) {
+        root.querySelectorAll("table").forEach(table => {
+            let idColIndex = -1;
+            table.querySelectorAll("th").forEach((th, idx) => {
+                const txt = th.textContent.trim().toLowerCase();
+                if (txt === "id" || txt === "_id") { idColIndex = idx; th.textContent = "source"; }
+            });
+            if (idColIndex === -1) return;
+            table.querySelectorAll("tbody tr").forEach(row => {
+                const cells = row.querySelectorAll("td");
+                const target = cells[idColIndex];
+                if (!target) return;
+                const idVal = target.textContent.trim();
+                target.innerHTML = "";
+                const btn = document.createElement("button");
+                btn.className = "source-btn";
+                btn.textContent = "View Message";
+                btn.onclick = () => openSourceModal(idVal);
+                target.appendChild(btn);
+            });
+        });
     }
-    
-    function formatMessage(role, text) {
+
+    function formatMessage(role, text, streaming=false) {
         const div = document.createElement("div");
         div.classList.add("msg", role === "user" ? "user-msg" : "assistant-msg");
-        
         if (role === "assistant") {
-            // Render Markdown
-            div.innerHTML = marked.parse(text);
-            
-            // Post-process Tables to add "View Source" buttons
-            const tables = div.querySelectorAll("table");
-            tables.forEach(table => {
-                // Find index of "ID" column
-                let idColIndex = -1;
-                const headers = table.querySelectorAll("th");
-                headers.forEach((th, idx) => {
-                    const txt = th.textContent.trim().toLowerCase();
-                    if (txt === "id" || txt === "_id") {
-                        idColIndex = idx;
-                        th.textContent = "Source"; // Rename header
-                    }
-                });
-
-                if (idColIndex !== -1) {
-                    const rows = table.querySelectorAll("tbody tr");
-                    rows.forEach(row => {
-                        const cells = row.querySelectorAll("td");
-                        if (cells[idColIndex]) {
-                            const idVal = cells[idColIndex].textContent.trim();
-                            // Clear ID and replace with button
-                            cells[idColIndex].innerHTML = ""; 
-                            
-                            const btn = document.createElement("button");
-                            btn.className = "source-btn";
-                            btn.textContent = "View Message";
-                            btn.onclick = () => openSourceModal(idVal);
-                            
-                            cells[idColIndex].appendChild(btn);
-                        }
-                    });
-                }
-            });
-
+            div.innerHTML = marked.parse(text || "");
+            if (!streaming) enhanceSourceButtons(div);
         } else {
-            div.textContent = text; 
+            div.textContent = text;
         }
         return div;
     }
 
-    // Load initial history
-    serverHistory.forEach(msg => {
-        const bubble = formatMessage(msg.role, msg.content);
-        chatWindow.appendChild(bubble);
-    });
-    // Scroll to bottom initially
-    chatWindow.scrollTop = chatWindow.scrollHeight;
+    function scrollBottom() { chatWindow.scrollTop = chatWindow.scrollHeight; }
+
+    serverHistory.forEach(msg => chatWindow.appendChild(formatMessage(msg.role, msg.content)));
+    scrollBottom();
+
+    async function streamAnswer(question) {
+        const selectedModel = modelSelect.value;
+        chatStatus.textContent = "Thinking...";
+
+        const assistantBubble = formatMessage("assistant", "", true);
+        chatWindow.appendChild(assistantBubble);
+        scrollBottom();
+
+        const res = await fetch("/core/chat/stream/", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": "{{ csrf_token }}"
+            },
+            body: JSON.stringify({ query: question, model: selectedModel, top_k: 8 })
+        });
+
+        if (!res.ok || !res.body) {
+            assistantBubble.innerHTML = marked.parse("⚠️ Request failed.");
+            chatStatus.textContent = "Failed";
+            return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let answer = "";
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const evt = JSON.parse(line);
+                    if (evt.type === "token") {
+                        answer += evt.delta || "";
+                        assistantBubble.innerHTML = marked.parse(answer);
+                        scrollBottom();
+                    } else if (evt.type === "done") {
+                        chatStatus.textContent = `Model: ${evt.model || selectedModel}`;
+                    } else if (evt.type === "error") {
+                        chatStatus.textContent = "Stream error";
+                    }
+                } catch (_) {}
+            }
+        }
+
+        assistantBubble.innerHTML = marked.parse(answer || "⚠️ Empty response.");
+        enhanceSourceButtons(assistantBubble);
+        scrollBottom();
+    }
 
     chatForm.addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -400,35 +273,15 @@
         if (!question) return;
 
         chatWindow.appendChild(formatMessage("user", question));
-        // saveMessage("user", question); // Optional: if using local storage sync
         chatInput.value = "";
-        chatWindow.scrollTop = chatWindow.scrollHeight;
+        scrollBottom();
 
         try {
-            chatStatus.textContent = "thinking…";
-            const selectedModel = modelSelect.value;
-            const res = await fetch("/core/chat/query/", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "X-CSRFToken": "{{ csrf_token }}"
-                },
-                body: JSON.stringify({ query: question, top_k: 8, model: selectedModel })
-            });
-
-            const data = await res.json();
-            let answer = data.answer || "Error retrieving response.";
-
-            chatWindow.appendChild(formatMessage("assistant", answer));
-            chatStatus.textContent = `model: ${data.model || selectedModel}`;
-            // saveMessage("assistant", answer); 
-        } catch (err) {
-            chatWindow.appendChild(formatMessage("assistant", "Connection error."));
-            chatStatus.textContent = "request failed";
+            await streamAnswer(question);
+        } catch {
+            chatWindow.appendChild(formatMessage("assistant", "⚠️ Connection error."));
+            chatStatus.textContent = "Connection error";
         }
-
-        chatWindow.scrollTop = chatWindow.scrollHeight;
     });
 </script>
-
 {% endblock %}
