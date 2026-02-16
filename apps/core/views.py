@@ -153,19 +153,49 @@ def _vector_to_pg_literal(vec: List[float]) -> str:
     return f"'[{inner}]'::vector"
 
 
-def _fetch_top_k_by_vector(vec: List[float], top_k: int) -> List[Dict[str, Any]]:
+def _extract_filters(query: str) -> Dict[str, Any]:
+    lowered = (query or "").lower()
+    filters: Dict[str, Any] = {}
+
+    if any(term in lowered for term in {"buy", "purchase", "want"}):
+        filters["listing_intent"] = "OFFER"
+        filters["transaction_type"] = "SALE"
+    elif any(term in lowered for term in {"rent", "lease"}):
+        filters["listing_intent"] = "OFFER"
+        filters["transaction_type"] = "RENT"
+
+    if any(term in lowered for term in {"flat", "apartment"}):
+        filters["property_type"] = "RESIDENTIAL"
+    elif any(term in lowered for term in {"office", "shop"}):
+        filters["property_type"] = "COMMERCIAL"
+
+    return filters
+
+
+def _fetch_top_k_by_vector(vec: List[float], filters: Dict[str, Any], top_k: int) -> List[Dict[str, Any]]:
     if not vec:
         return []
+    
+    where_clauses = ["er.embedding_vector IS NOT NULL"]
+    params: List[Any] = []
+
+    for key, value in (filters or {}).items():
+        where_clauses.append("lc.metadata->>%s = %s")
+        params.extend([key, str(value)])
+
 
     sql = f"""
-        SELECT id, listing_chunk_id, embedding_vector <-> {_vector_to_pg_literal(vec)} AS distance
-        FROM preprocessing_embeddingrecord
-        WHERE embedding_vector IS NOT NULL
+        SELECT er.id, er.listing_chunk_id, er.embedding_vector <-> {_vector_to_pg_literal(vec)} AS distance
+        FROM preprocessing_embeddingrecord er
+        JOIN preprocessing_listingchunk lc ON lc.id = er.listing_chunk_id
+        WHERE {' AND '.join(where_clauses)}
         ORDER BY distance
         LIMIT %s
     """
+    params.append(top_k)
+
     with connection.cursor() as cur:
-        cur.execute(sql, [top_k])
+        cur.execute(sql, params)
         rows = cur.fetchall()
 
     return [
@@ -219,7 +249,8 @@ def _fetch_top_k_by_keyword(query: str, top_k: int) -> List[Dict[str, Any]]:
 def _hybrid_retrieve(query: str, top_k: int = DEFAULT_TOP_K) -> List[Dict[str, Any]]:
     expanded = _expanded_query(query)
     candidate_pool = max(32, top_k * 5)
-    vec_hits = _fetch_top_k_by_vector(_embed_query(expanded), top_k=candidate_pool)
+    filters = _extract_filters(query)
+    vec_hits = _fetch_top_k_by_vector(_embed_query(expanded), filters=filters, top_k=candidate_pool)
     kw_hits = _fetch_top_k_by_keyword(expanded, top_k=candidate_pool)
 
     fused_scores: Dict[int, float] = defaultdict(float)

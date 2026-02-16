@@ -8,7 +8,7 @@ import multiprocessing
 from typing import List, Optional, Literal
 from django.conf import settings
 from openai import AsyncOpenAI
-from pydantic import BaseModel, Field, field_validator  # <--- Added field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator  
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, after_log
 
 log = logging.getLogger(__name__)
@@ -27,7 +27,14 @@ MAX_CONCURRENT_PACKETS = 3 # Process 3 packets (45 messages) concurrently per wo
 # --- Pydantic Schemas ---
 class PropertyListing(BaseModel):
     cleaned_text: str = Field(..., description="A single, concise sentence summarizing the listing. Remove emojis, agent names, and fluff. Example: '2 BHK fully furnished flat for rent in Bandra West, price 85k.'")
-    listing_type: Literal['RENT', 'LEASE', 'SALE', 'OWNERSHIP', 'REQUIREMENT', 'UNKNOWN'] = Field(..., description="Is this for rent, sale, or a requirement?")
+    listing_intent: Literal['OFFER', 'REQUEST'] = Field(
+        default='OFFER',
+        description="'OFFER' is for property owners listing a place. 'REQUEST' is for users looking/wanting a place.",
+    )
+    transaction_type: Literal['RENT', 'SALE'] = Field(
+        default='SALE',
+        description="'RENT' covers rent/lease. 'SALE' covers buy/sell/ownership.",
+    )
     property_type: Literal['RESIDENTIAL', 'COMMERCIAL', 'PLOT', 'LAND', 'UNKNOWN'] = Field(..., description="Type of property.")
     location: str = Field(..., description="Specific locality (e.g., 'Pali Hill', 'BKC'). Do not include 'Mumbai'.")
     building_name: Optional[str] = Field(None, description="Name of the building, project, or society.")
@@ -44,24 +51,34 @@ class PropertyListing(BaseModel):
 
     # --- VALIDATORS TO PREVENT DATA LOSS ---
 
-    @field_validator('listing_type', mode='before')
+    @field_validator('listing_intent', mode='before')
     @classmethod
-    def normalize_listing_type(cls, v):
-        if not v:
-            return "UNKNOWN"
-        s = str(v).upper().strip()
-        if s in {"OWNERSHIP", "OWN"}:
-            return "OWNERSHIP"
-        if "LEASE" in s or "LICENSE" in s:
-            return "LEASE"
-        if "RENT" in s:
-            return "RENT"
-        if "SALE" in s or "BUY" in s or "SELL" in s:
-            return "SALE"
-        if "REQUIRE" in s:
-            return "REQUIREMENT"
-        return "UNKNOWN"
+    def normalize_listing_intent(cls, v, info: ValidationInfo):
+        cleaned_text = str((info.data or {}).get("cleaned_text") or "").lower()
+        if any(term in cleaned_text for term in ["looking for", "want", "require", "need"]):
+            return "REQUEST"
 
+        if not v:
+            return "OFFER"
+        
+        s = str(v).upper().strip()
+        if s in {"REQUEST", "REQUIREMENT", "LOOKING"}:
+            return "REQUEST"
+        
+        return "OFFER"
+    
+    @field_validator('transaction_type', mode="before")
+    @classmethod
+    def normalize_transaction_type(cls, v, info: ValidationInfo) -> str:
+        raw = f"{str(v or '')} {str((info.data or {}).get('cleaned_text') or '')}".upper().strip()
+
+        if "LEASE" in raw or "LICENSE" in raw or "RENT" in raw:
+            return "RENT"
+                
+        if "SALE" in raw or "BUY" in raw or "SELL" in raw or "OWNERSHIP" in raw or "OWN" in raw:
+            return "SALE"
+        
+        return "SALE"
 
     @field_validator('location', mode='before')
     @classmethod
