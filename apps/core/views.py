@@ -228,7 +228,7 @@ def _hybrid_retrieve(query: str, top_k: int = DEFAULT_TOP_K) -> List[Dict[str, A
 
     max_kw = max((item.get("keyword_score", 0.0) for item in kw_hits), default=0.0)
 
-    for item in vec_hits:
+    for rank, item in enumerate(vec_hits, start=1):
         lid = item.get("listing_chunk_id")
         if lid:
             fused_scores[lid] += 1.0 / (40 + rank)
