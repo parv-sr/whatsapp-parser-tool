@@ -1,8 +1,13 @@
+# Updated apps/ingestion/tasks.py
 from celery import shared_task
 from django.db import close_old_connections
-from .pipeline import process_file_in_background, process_raw_chunk_batch
+from django.core.cache import cache
+
 import logging
+from time import sleep  # For race condition handling
+
 from .models import RawFile
+from .pipeline import process_file_in_background
 
 log = logging.getLogger(__name__)
 
@@ -10,37 +15,36 @@ log = logging.getLogger(__name__)
 def process_file_task(self, file_id):
     """
     Orchestrator Task:
-    Streams the file, breaks it into chunks, saves to DB, and dispatches worker tasks.
+    In the new Threaded Architecture, this single task handles the entire lifecycle:
+    Streaming -> Batching -> Threaded Extraction -> Saving -> Completion.
     """
     close_old_connections()
     try:
-        # Quick check
-        if not RawFile.objects.filter(pk=file_id).exists():
-            log.warning(f"File {file_id} not found yet. Retrying...")
-            raise Exception(f"RawFile {file_id} not found")
+        # Wait for RawFile to exist (handle race condition)
+        attempts = 0
+        max_attempts = 10  # 10s max wait
+        while attempts < max_attempts:
+            if RawFile.objects.filter(pk=file_id).exists():
+                break
+            sleep(1)  # 1s sleep
+            attempts += 1
+            log.info(f"Waiting for RawFile {file_id}... Attempt {attempts}/{max_attempts}")
 
-        # Call the streaming orchestrator in pipeline.py
+        if attempts == max_attempts:
+            raise Exception(f"RawFile {file_id} not found after {max_attempts}s wait")
+
+        if cache.get(f"cancel:{file_id}", False):
+            log.warning("Task exiting early because file_id=%s is already cancelled", file_id)
+            RawFile.objects.filter(pk=file_id).update(status="CANCELLED", notes="Cancelled by user")
+            return
+        
+        log.info("Task entering pipeline for file_id=%s", file_id)        
         process_file_in_background(file_id)
+        log.info("Task pipeline finished for file_id=%s", file_id)
         
     except Exception as e:
-        log.exception(f"Celery orchestrator failed for file_id={file_id}: {e}")
+        log.exception(f"Celery task failed for file_id={file_id}: {e}")
+        # We re-raise to ensure Celery records the failure or retries
         raise
-    finally:
-        close_old_connections()
-
-
-@shared_task(bind=True, ignore_result=True)
-def process_batch_task(self, chunk_ids):
-    """
-    Worker Task:
-    Processes a specific list of RawMessageChunk IDs.
-    - ignore_result=True saves Redis OPS (Critical for free tier)
-    """
-    close_old_connections()
-    try:
-        process_raw_chunk_batch(chunk_ids)
-    except Exception as e:
-        # Log but don't retry indefinitely to avoid queue clogging on free tier
-        log.error(f"Batch processing failed for {len(chunk_ids)} chunks: {e}")
     finally:
         close_old_connections()

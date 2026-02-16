@@ -1,40 +1,46 @@
 {% extends "base.html" %}
+{% load static %}
+
 {% block content %}
-
 <style>
-    /* Layout (unchanged) */
-    .success-container {
-        max-width: 800px;
-        margin: 0 auto;
-        padding: 2rem 1rem;
-    }
-
+    /* Glassmorphism Panel Styles 
+       Reusing the look from the upload form for consistency
+    */
     .glass-panel {
-        background: rgba(255, 255, 255, 0.03);
-        backdrop-filter: blur(12px);
+        background: rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 16px;
         padding: 2rem;
         margin-bottom: 2rem;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
     }
 
-    h2 { color: white; margin-bottom: 0.5rem; text-align: center; }
-    h3 { color: var(--pico-primary); font-size: 1.1rem; margin: 0 0 1rem; text-transform: uppercase; letter-spacing: 1px; }
+    h3 {
+        margin-top: 0;
+        margin-bottom: 1.5rem;
+        font-weight: 700;
+        color: #e2e8f0;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+        padding-bottom: 0.5rem;
+    }
 
-    /* File List (unchanged) */
+    /* File List */
     .file-list {
-        list-style: none; padding: 0; margin: 0;
+        list-style: none;
+        padding: 0;
+        margin: 0;
     }
     .file-list li {
-        background: rgba(255,255,255,0.05);
-        margin-bottom: 0.5rem;
-        padding: 0.75rem 1rem;
-        border-radius: 8px;
-        color: white;
+        padding: 0.8rem 0;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+        color: #94a3b8;
         display: flex;
         align-items: center;
-        border: 1px solid rgba(255,255,255,0.05);
+    }
+    .file-list li:last-child {
+        border-bottom: none;
     }
     .file-list li::before {
         content: "File";
@@ -60,41 +66,9 @@
         border-color: #4ade80;
     }
 
-    /* THE FIX: Fully styleable progress bar */
-    progress {
-        display: block;
-        width: 100%;
-        height: 12px;
-        margin: 0.8rem 0 0;
-        border: none;
-        border-radius: 10px;
-        background-color: rgba(255,255,255,0.1);
-        overflow: hidden;
-
-        /* Critical: Remove native appearance */
-        appearance: none;
-        -webkit-appearance: none;
-        -moz-appearance: none;
-    }
-
-    /* WebKit (Chrome, Safari, Edge) */
-    progress::-webkit-progress-bar {
-        background-color: rgba(255,255,255,0.1);
-        border-radius: 10px;
-    }
-    progress::-webkit-progress-value {
-        background: linear-gradient(90deg, var(--pico-primary), #00ffd5);
-        border-radius: 10px;
-        box-shadow: 0 0 15px rgba(0, 255, 200, 0.5);
-        transition: width 0.4s ease;
-    }
-
-    /* Firefox */
-    progress::-moz-progress-bar {
-        background: linear-gradient(90deg, var(--pico-primary), #00ffd5);
-        border-radius: 10px;
-        box-shadow: 0 0 15px rgba(0, 255, 200, 0.5);
-    }
+    .stage-meter { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 0.8rem; }
+    .stage-cell { height: 12px; border-radius: 5px; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.14); }
+    .stage-cell.on { background: linear-gradient(90deg, var(--pico-primary), #00ffd5); box-shadow: 0 0 12px rgba(0, 255, 200, 0.45); }
 
     /* Status */
     .status-text { 
@@ -121,14 +95,12 @@
     }
     .btn-secondary:hover {
         background: rgba(255,255,255,0.15);
-        border-color: var(--pico-primary);
         transform: translateY(-2px);
     }
 </style>
 
-<div class="success-container">
-    <h2>Upload Successful</h2>
-    <p style="text-align:center; color:#ccc;">Your WhatsApp chats are being parsed in the background. Sit back!</p>
+<div style="max-width: 800px; margin: 2rem auto;">
+    <h2 style="text-align: center; margin-bottom: 2rem;">Upload Summary</h2>
 
     <div class="glass-panel">
         <h3>Uploaded Files</h3>
@@ -154,7 +126,9 @@
                         <strong>File ID: {{ file_id }}</strong>
                         <span id="status-{{ file_id }}" class="status-text">starting…</span>
                     </div>
-                    <progress id="progress-{{ file_id }}" value="0" max="100"></progress>
+                    <div id="meter-{{ file_id }}" class="stage-meter" data-stage="1">
+                        <span class="stage-cell on"></span><span class="stage-cell"></span><span class="stage-cell"></span><span class="stage-cell"></span><span class="stage-cell"></span>
+                    </div>
                 </li>
                 {% endfor %}
             </ul>
@@ -171,52 +145,68 @@
     </div>
 </div>
 
+{{ processing_files|default:"[]"|json_script:"processing-file-ids" }}
+<script src="{% static 'js/progress_poller.js' %}"></script>
 <script>
-    // Prevent multiple intervals (Django template caching issue)
-    if (!window.__progressPolling) {
-        window.__progressPolling = true;
+    document.addEventListener("DOMContentLoaded", function() {
+        const fileIds = JSON.parse(document.getElementById("processing-file-ids").textContent || "[]");
+        
+        console.log("Processing files:", fileIds);
+        
+        if (fileIds && fileIds.length > 0) {
+            const poller = new ProgressPoller({
+                ids: fileIds,
+                url: "{% url 'ingestion:progress_status' %}",
+                interval: 1800,
+                
+                // Custom update function for this page
+                onUpdate: function(files, pollerInstance) {
+                    files.forEach(f => {
+                        const meter = document.getElementById("meter-" + f.id);
+                        const stat = document.getElementById("status-" + f.id);
+                        const wrapper = document.getElementById("file-wrapper-" + f.id);
 
-        async function updateProgress() {
-            try {
-                const resp = await fetch("/ingestion/progress/");
-                if (!resp.ok) return;
-                const data = await resp.json();
+                        if (!meter || !stat) {
+                            console.warn(`Elements not found for file ${f.id}`);
+                            return;
+                        }
 
-                if (!data.files || data.files.length === 0) {
-                    clearInterval(window.__progressInterval);
-                    return;
+                        console.log(`File ${f.id}: ${f.status} ${f.progress}%`);
+
+                        const stage = Math.max(0, Math.min(5, f.stage || 0));
+                        const cells = meter.querySelectorAll('.stage-cell');
+                        cells.forEach((cell, idx) => {
+                            cell.classList.toggle('on', idx < stage);
+                        });
+
+                        // Update status
+                        if (f.status === 'COMPLETED') {
+                            stat.textContent = "Completed!";
+                            stat.classList.add("status-success");
+                            if (wrapper) wrapper.classList.add("done");
+                            pollerInstance.completedIds.add(f.id);
+                        } else if (f.status === 'FAILED') {
+                            stat.textContent = 'Failed';
+                            stat.style.color = '#ef4444';
+                            pollerInstance.completedIds.add(f.id);
+                        } else if (f.status === 'CANCELLED') {
+                            stat.textContent = 'Cancelled';
+                            stat.style.color = '#f59e0b';
+                            pollerInstance.completedIds.add(f.id);
+                        } else if (f.status === 'PROCESSING') {
+                            stat.textContent = f.stage_label || 'Processing';
+                        } else if (f.status === 'PENDING') {
+                            stat.textContent = f.stage_label || 'Queued';
+                        }
+                    });
                 }
+            });
 
-                let allDone = true;
-                data.files.forEach(f => {
-                    const prog = document.getElementById("progress-" + f.id);
-                    const stat = document.getElementById("status-" + f.id);
-                    const wrapper = document.getElementById("file-wrapper-" + f.id);
-
-                    if (!prog || !stat) return;
-
-                    prog.value = f.progress;
-
-                    if (f.progress >= 100) {
-                        stat.textContent = "Completed!";
-                        stat.classList.add("status-success");
-                        wrapper.style.borderColor = "#4ade80";
-                        setTimeout(() => wrapper.style.opacity = "0.6", 1000);
-                    } else {
-                        stat.textContent = f.progress + "%";
-                        allDone = false;
-                    }
-                });
-
-                if (allDone) clearInterval(window.__progressInterval);
-            } catch (err) {
-                console.warn("Progress fetch failed", err);
-            }
+            poller.start();
+        } else {
+            console.log("No files to track");
         }
-
-        updateProgress();
-        window.__progressInterval = setInterval(updateProgress, 1800);
-    }
+    });
 </script>
 
 {% endblock %}

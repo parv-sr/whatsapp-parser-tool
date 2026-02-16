@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'django.contrib.postgres',
     'pgvector',
+    'django_celery_results',
     'apps.core',
     'apps.ingestion',
     'apps.preprocessing',
@@ -128,53 +129,41 @@ if not DEBUG and os.getenv("DB_HOST") not in ['localhost', '127.0.0.1']:
 
 REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/1')
 
-# 1. Base Settings (Local / No-SSL)
-CELERY_BROKER_URL = REDIS_URL
-CELERY_RESULT_BACKEND = REDIS_URL
+
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASS = os.getenv("DB_PASS", "admin@2025")
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "whatsapp-parser-tool-db")
+
+CELERY_BROKER_URL = f'sqlalchemy+postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
+
+if not DEBUG and DB_HOST not in ['localhost', '127.0.0.1']:
+    CELERY_BROKER_URL += '?sslmode=require'
+
+
+#CELERY_BROKER_URL = 'django://'
+CELERY_RESULT_BACKEND = 'django-db'
 CELERY_BROKER_USE_SSL = False
 CELERY_REDIS_BACKEND_USE_SSL = False
 
-ELERY_WORKER_CONCURRENCY = 2
+CELERY_WORKER_CONCURRENCY = 16
 # Prevent worker from prefetching too many tasks (fair distribution)
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 # Disable result backend to save Redis Ops (critical for 10k daily limit)
 CELERY_TASK_IGNORE_RESULT = True
 CELERY_TASK_STORE_ERRORS_EVEN_IF_IGNORED = True
 
+# --- MOVED CACHE TO DATABASE (SUPABASE) ---
 CACHES = {
     "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": REDIS_URL,
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-            # Note: CONNECTION_POOL_KWARGS is intentionally missing here for Local dev
-        }
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "django_cache_table",  # Table created via 'createcachetable'
+        "TIMEOUT": 3600,
     }
 }
 
-# 2. Production / SSL Overrides
-# Only apply SSL settings if DEBUG is False AND the URL supports it
-if not DEBUG and REDIS_URL.startswith("rediss://"):
     
-    # Fix URL query params for Celery
-    if "?" not in REDIS_URL:
-        REDIS_URL += "?ssl_cert_reqs=none"
-    elif "ssl_cert_reqs" not in REDIS_URL:
-        REDIS_URL += "&ssl_cert_reqs=none"
-        
-    CELERY_BROKER_URL = REDIS_URL
-    CELERY_RESULT_BACKEND = REDIS_URL
-    
-    ssl_conf = {'ssl_cert_reqs': ssl.CERT_NONE}
-    CELERY_BROKER_USE_SSL = ssl_conf
-    CELERY_REDIS_BACKEND_USE_SSL = ssl_conf
-    
-    # Inject SSL args into Cache config
-    CACHES["default"]["OPTIONS"]["CONNECTION_POOL_KWARGS"] = {
-        "ssl_cert_reqs": ssl.CERT_NONE
-    }
-
-
 # --- PASSWORD VALIDATION ---
 
 AUTH_PASSWORD_VALIDATORS = [
@@ -205,6 +194,9 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_DIRS = [
+    BASE_DIR / "static",
+]
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 MEDIA_URL = '/media/'
@@ -218,6 +210,12 @@ if not os.path.exists(MEDIA_ROOT):
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+OPENAI_CHAT_MODELS = [
+    "gpt-4o-mini",
+    "gpt-4o",
+    "gpt-4.1-mini",
+]
 
 
 # --- SECURITY & HTTPS ---
