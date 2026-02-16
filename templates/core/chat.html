@@ -3,10 +3,28 @@
 
 {% block content %}
 <style>
-    body { overflow: hidden !important; height: 100vh; }
-    main.container { height: 100%; max-width: 100% !important; padding: 0 !important; display: flex; flex-direction: column; }
+    /* --- LAYOUT OVERRIDES (Fixes Scroll) --- */
+    body {
+        height: 100vh !important;       /* Force viewport height */
+        overflow: hidden !important;    /* Disable window scrollbar */
+        /* Body is already flex-col in base.html, so Header + Main stack naturally */
+    }
 
-    #chat-wrapper { display: flex; flex-direction: column; flex: 1; width: 100%; max-width: 1100px; margin: 0 auto; }
+    main.container {
+        flex: 1;                        /* Fill remaining vertical space */
+        display: flex !important;       /* Turn Main into a flex container */
+        flex-direction: column;
+        min-height: 0;                  /* CRITICAL: Allows children to scroll */
+        padding: 0 !important;          /* Remove base.html padding */
+        max-width: 100% !important;     /* Full width for chat */
+        height: auto !important;
+    }
+
+    #chat-wrapper {
+        display: flex; flex-direction: column; flex: 1;
+        width: 100%; max-width: 1100px; margin: 0 auto;
+        min-height: 0;                  /* CRITICAL: Allows #chat-window to scroll */
+    }
     #chat-window {
         flex: 1;
         overflow-y: auto;
