@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 
 EMBEDDING_MODEL = getattr(settings, "EMBEDDING_MODEL", "text-embedding-3-small")
 CHAT_MODEL = getattr(settings, "CHAT_MODEL", "gpt-4o-mini")
-DEFAULT_TOP_K = 6
+DEFAULT_TOP_K = 8
 ALLOWED_CHAT_MODELS = getattr(
     settings,
     "OPENAI_CHAT_MODELS",
@@ -31,8 +31,8 @@ ALLOWED_CHAT_MODELS = getattr(
 )
 
 REAL_ESTATE_TERMS = {
-    "rent", "rental", "lease", "leave", "license", "sale", "buy", "sell", "property", "flat", "apartment",
-    "office", "shop", "villa", "bhk", "sqft", "carpet", "price", "budget", "listing", "ownership",
+    "office", "shop", "villa", "bhk", "sqft", "carpet", "price", "budget", "listing", "ownership", "commercial",
+    "residential", "tenant", "furnish", "deposit", "location", "area", "tower", "building", "layout",
 }
 OWNERSHIP_TERMS = {"buy", "sale", "sell", "ownership", "own", "purchase", "resale"}
 LEASE_TERMS = {"lease", "leave and license", "l&l", "license"}
@@ -103,7 +103,28 @@ def _expanded_query(query: str) -> str:
     return q
 
 
+
+def _extract_query_preferences(query: str) -> Dict[str, str]:
+    """
+    Infer simple hard preferences from the query so reranking can prioritize
+    listings that explicitly match intent.
+    """
+    lowered = (query or "").lower()
+    prefs: Dict[str, str] = {}
+    txn = _infer_transaction_type(lowered)
+    if txn != "UNKNOWN":
+        prefs["transaction_type"] = txn
+
+    if any(t in lowered for t in {"office", "commercial", "shop"}):
+        prefs["property_type"] = "COMMERCIAL"
+    elif any(t in lowered for t in {"flat", "apartment", "villa", "residential", "bhk"}):
+        prefs["property_type"] = "RESIDENTIAL"
+    return prefs
+
+
 def _is_domain_query(query: str) -> bool:
+    if any(ch.isdigit() for ch in query):
+        return True
     tokens = [t for t in re.split(r"\W+", query.lower()) if t]
     if len(tokens) < 2:
         return False
@@ -162,16 +183,30 @@ def _fetch_top_k_by_keyword(query: str, top_k: int) -> List[Dict[str, Any]]:
     if not terms:
         return []
 
-    where_clause = " OR ".join(["LOWER(lc.text) LIKE %s" for _ in terms])
-    params = [f"%{t}%" for t in terms]
+    where_clause = " OR ".join(["LOWER(lc.text) LIKE %s OR LOWER(CAST(lc.metadata AS TEXT)) LIKE %s" for _ in terms])
+    
+    score_clause = " + ".join([
+        "(CASE WHEN LOWER(lc.text) LIKE %s THEN 1 ELSE 0 END + CASE WHEN LOWER(CAST(lc.metadata AS TEXT)) LIKE %s THEN 1 ELSE 0 END)"
+        for _ in terms
+    ])
+
+    params: List[Any] = []
+
+    for t in terms:
+        like = f"%{t}%"
+        params.extend([like, like])
     sql = f"""
-        SELECT lc.id, COUNT(*)::float AS keyword_score
+        SELECT lc.id, ({score_clause})::float AS keyword_score
         FROM preprocessing_listingchunk lc
         WHERE {where_clause}
         GROUP BY lc.id
         ORDER BY keyword_score DESC, lc.last_seen DESC
         LIMIT %s
     """
+    for t in terms:
+        like = f"%{t}%"
+        params.extend([like, like])
+
     params.append(top_k)
 
     with connection.cursor() as cur:
@@ -183,13 +218,17 @@ def _fetch_top_k_by_keyword(query: str, top_k: int) -> List[Dict[str, Any]]:
 
 def _hybrid_retrieve(query: str, top_k: int = DEFAULT_TOP_K) -> List[Dict[str, Any]]:
     expanded = _expanded_query(query)
-    vec_hits = _fetch_top_k_by_vector(_embed_query(expanded), top_k=max(24, top_k * 4))
-    kw_hits = _fetch_top_k_by_keyword(expanded, top_k=max(24, top_k * 4))
+    candidate_pool = max(32, top_k * 5)
+    vec_hits = _fetch_top_k_by_vector(_embed_query(expanded), top_k=candidate_pool)
+    kw_hits = _fetch_top_k_by_keyword(expanded, top_k=candidate_pool)
 
     fused_scores: Dict[int, float] = defaultdict(float)
     rank_data: Dict[int, Dict[str, Any]] = {}
+    query_prefs = _extract_query_preferences(query)
 
-    for rank, item in enumerate(vec_hits, start=1):
+    max_kw = max((item.get("keyword_score", 0.0) for item in kw_hits), default=0.0)
+
+    for item in vec_hits:
         lid = item.get("listing_chunk_id")
         if lid:
             fused_scores[lid] += 1.0 / (40 + rank)
@@ -198,8 +237,31 @@ def _hybrid_retrieve(query: str, top_k: int = DEFAULT_TOP_K) -> List[Dict[str, A
     for rank, item in enumerate(kw_hits, start=1):
         lid = item.get("listing_chunk_id")
         if lid:
-            fused_scores[lid] += 1.0 / (40 + rank)
+            kw_score = float(item.get("keyword_score") or 0.0)
+            normalized_kw = (kw_score / max_kw) if max_kw > 0 else 0.0
+            fused_scores[lid] += normalized_kw * 0.3
             rank_data[lid] = {**rank_data.get(lid, {}), **item}
+
+    listing_ids = list(fused_scores.keys())
+    listing_map = {
+        l.id: l
+        for l in ListingChunk.objects.filter(id__in=listing_ids).only(
+            "id", "transaction_type", "category", "intent", "metadata"
+        )
+    }
+
+    for lid in listing_ids:
+        listing = listing_map.get(lid)
+        if not listing:
+            continue
+        if query_prefs.get("transaction_type") and listing.transaction_type == query_prefs["transaction_type"]:
+            fused_scores[lid] += 0.2
+
+        property_pref = query_prefs.get("property_type")
+        if property_pref == "COMMERCIAL" and listing.category == "COMMERCIAL":
+            fused_scores[lid] += 0.15
+        if property_pref == "RESIDENTIAL" and listing.category == "RESIDENTIAL":
+            fused_scores[lid] += 0.15
 
     ranked_ids = [lid for lid, _ in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]]
     return [{"listing_chunk_id": lid, **rank_data.get(lid, {}), "hybrid_score": fused_scores[lid]} for lid in ranked_ids]
@@ -224,12 +286,13 @@ def _build_prompt(query: str, contexts: List[Dict[str, Any]]) -> List[Dict[str, 
         "Only use snippet JSON facts. If query is irrelevant, gibberish, or outside real-estate listings, reply exactly: "
         "'I can only help with real-estate listing queries based on uploaded WhatsApp data.'\n\n"
         "When relevant:\n"
-        "1) Rank listings by relevance to the user query.\n"
+        "1) Rank listings by relevance to the user query giving priority to explicit constraints (location, budget, BHK, transaction type, furnishing, parking).\n"
         "2) Output concise markdown with sections: 'Top Matches' then 'Details'.\n"
         "3) In 'Top Matches', include numbered bullets with listing id and why relevant.\n"
         "4) In 'Details', provide a markdown table with columns: id, transaction_type, property_type, location, bhk, sqft, price, furnishing, parking, contact_numbers.\n"
         "5) Never leave blank values: write 'Not specified'.\n"
         "6) Distinguish RENT vs LEASE vs SALE clearly.\n"
+        "7) If query asks for filtering, return only matching listings from snippets when possible.\n"
     )
 
     user_prompt = (
@@ -276,7 +339,11 @@ def _parse_request(request: HttpRequest) -> Optional[Dict[str, Any]]:
 
 
 def _should_reject(query: str, contexts: List[Dict[str, Any]]) -> bool:
-    return _is_gibberish(query) or (not _is_domain_query(query) and len(contexts) < 2)
+    if _is_gibberish(query):
+        return True
+    if contexts:
+        return False
+    return not _is_domain_query(query)
 
 
 def _stream_chat_completion(messages: List[Dict[str, str]], model: str, temperature: float) -> Iterable[str]:
