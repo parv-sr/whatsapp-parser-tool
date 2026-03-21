@@ -3,19 +3,21 @@
 
 {% block content %}
 <style>
-    body {
-        height: 100vh !important;
-        overflow: hidden !important;
+    html, body {
+        overflow: hidden;
     }
 
-    main.container {
-        flex: 1;
-        display: flex !important;
+    main {
+        padding-bottom: 7rem;
+    }
+
+    #chat-shell {
+        width: min(1080px, 100%);
+        margin: 0 auto;
+        height: calc(100vh - 210px);
+        min-height: 420px;
+        display: flex;
         flex-direction: column;
-        min-height: 0;
-        max-width: 100% !important;
-        width: 100%;
-        padding: 0.5rem 0.75rem 0 !important;
     }
 
     #chat-wrapper {
@@ -23,15 +25,19 @@
         flex-direction: column;
         flex: 1;
         min-height: 0;
-        width: min(1080px, 100%);
-        margin: 0 auto;
     }
 
     #chat-window {
         flex: 1;
         overflow-y: auto;
         padding: 0.5rem 0.25rem 7.5rem;
-        scrollbar-width: thin;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+    }
+
+    #chat-window::-webkit-scrollbar {
+        width: 0;
+        height: 0;
     }
 
     .msg {
@@ -78,6 +84,13 @@
         overflow-x: auto;
         border-collapse: collapse;
         margin-top: 0.5rem;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+    }
+
+    .msg table::-webkit-scrollbar {
+        width: 0;
+        height: 0;
     }
 
     .msg th, .msg td {
@@ -122,10 +135,28 @@
         border-radius: 10px;
         font-size: 0.82rem;
         padding: 0 0.7rem;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        background: rgba(15, 23, 42, 0.82);
+        color: #dbeafe;
     }
 
     #chat-input::placeholder {
-        color: rgba(226, 232, 240, 0.6);
+        color: rgba(203, 213, 225, 0.75);
+    }
+
+    #chat-input:focus,
+    .control:focus {
+        outline: none;
+        border-color: rgba(56, 189, 248, 0.7);
+        box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+    }
+
+    #chat-input:-webkit-autofill,
+    #chat-input:-webkit-autofill:hover,
+    #chat-input:-webkit-autofill:focus {
+        -webkit-text-fill-color: #dbeafe;
+        box-shadow: 0 0 0 1000px rgba(15, 23, 42, 0.95) inset;
+        transition: background-color 9999s ease-in-out 0s;
     }
 
     #chat-status {
@@ -155,32 +186,112 @@
 
     .source-btn {
         margin: 0;
-        padding: 0.2rem 0.5rem;
+        padding: 0.25rem 0.7rem;
         border-radius: 999px;
         font-size: 0.72rem;
-        border: 1px solid rgba(56, 189, 248, 0.55);
-        background: rgba(14, 165, 233, 0.14);
-        color: #7dd3fc;
+        font-weight: 600;
+        border: 1px solid rgba(56, 189, 248, 0.5);
+        background: linear-gradient(145deg, rgba(14, 165, 233, 0.25), rgba(37, 99, 235, 0.18));
+        color: #c7ebff;
         cursor: pointer;
+        transition: all 0.2s ease;
     }
 
-    dialog article {
-        background: rgba(13, 18, 30, 0.96) !important;
-        border: 1px solid var(--pico-muted-border-color);
+    .source-btn:hover {
+        transform: translateY(-1px);
+        border-color: rgba(125, 211, 252, 0.9);
+        background: linear-gradient(145deg, rgba(14, 165, 233, 0.35), rgba(37, 99, 235, 0.3));
+    }
+
+    dialog::backdrop {
+        background: rgba(2, 6, 23, 0.75);
+    }
+
+    #source-modal {
+        padding: 0;
+        border: none;
+        max-width: min(860px, 95vw);
+        width: 100%;
+        background: transparent;
+    }
+
+    #source-modal article {
+        margin: 0;
+        border-radius: 18px;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        background: linear-gradient(165deg, rgba(15, 23, 42, 0.98), rgba(11, 18, 34, 0.98)) !important;
+        box-shadow: 0 24px 80px rgba(2, 6, 23, 0.55);
+        overflow: hidden;
+    }
+
+    .source-modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 1rem 1.1rem 0.7rem;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+        background: rgba(15, 23, 42, 0.55);
+    }
+
+    .source-modal-title {
+        margin: 0;
+        color: #e2e8f0;
+        font-size: 1.25rem;
+        font-weight: 700;
+    }
+
+    .modal-close-btn {
+        display: inline-grid;
+        place-items: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.4);
+        background: rgba(15, 23, 42, 0.8);
+        color: #dbeafe;
+        font-size: 1.1rem;
+        cursor: pointer;
+        line-height: 1;
+    }
+
+    .modal-close-btn:hover {
+        border-color: rgba(248, 113, 113, 0.75);
+        color: #fecaca;
+        background: rgba(127, 29, 29, 0.2);
+    }
+
+    .source-modal-meta {
+        padding: 0.7rem 1.1rem 0.4rem;
+        font-size: 0.9rem;
+        color: #94a3b8;
     }
 
     .raw-msg-box {
-        max-height: 50vh;
+        margin: 0.35rem 1.1rem 1.1rem;
+        max-height: min(58vh, 620px);
         overflow-y: auto;
-        padding: 0.75rem;
-        border-radius: 10px;
-        background: rgba(0, 0, 0, 0.35);
-        font-size: 0.8rem;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+        padding: 0.9rem;
+        border-radius: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        background: rgba(2, 6, 23, 0.5);
+        font-size: 0.84rem;
+        color: #dbeafe;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    .raw-msg-box::-webkit-scrollbar {
+        width: 0;
+        height: 0;
     }
 
     @media (max-width: 760px) {
-        main.container {
-            padding: 0.3rem 0.4rem 0 !important;
+        #chat-shell {
+            height: calc(100vh - 230px);
         }
 
         #chat-window {
@@ -202,7 +313,7 @@
     }
 </style>
 
-<div id="chat-wrapper"><div id="chat-window"></div></div>
+<div id="chat-shell"><div id="chat-wrapper"><div id="chat-window"></div></div></div>
 
 <div id="chat-input-bar">
     <form id="chat-form">
@@ -221,11 +332,11 @@
 
 <dialog id="source-modal">
     <article>
-        <header>
-            <button aria-label="Close" rel="prev" onclick="closeSourceModal()"></button>
-            <h3>Original Message</h3>
-        </header>
-        <p style="font-size:0.9rem;color:#94a3b8;margin-bottom:.5rem;">Sender: <span id="modal-sender" style="color:white"></span> | Time: <span id="modal-time" style="color:white"></span></p>
+        <div class="source-modal-header">
+            <h3 class="source-modal-title">Original Message</h3>
+            <button class="modal-close-btn" aria-label="Close" onclick="closeSourceModal()">✕</button>
+        </div>
+        <p class="source-modal-meta">Sender: <span id="modal-sender" style="color:#f8fafc;font-weight:600;"></span> | Time: <span id="modal-time" style="color:#f8fafc;font-weight:600;"></span></p>
         <pre id="modal-content" class="raw-msg-box">Loading...</pre>
     </article>
 </dialog>
@@ -241,10 +352,16 @@
     const chatStatus = document.getElementById("chat-status");
     const modal = document.getElementById("source-modal");
 
-    function closeSourceModal() { modal.removeAttribute("open"); }
+    function closeSourceModal() {
+        if (modal.open) modal.close();
+    }
 
     async function openSourceModal(listingId) {
-        modal.setAttribute("open", true);
+        if (typeof modal.showModal === "function") {
+            modal.showModal();
+        } else {
+            modal.setAttribute("open", true);
+        }
         document.getElementById("modal-content").textContent = "Loading original message...";
         try {
             const res = await fetch(`/core/chat/source/${listingId}/`);

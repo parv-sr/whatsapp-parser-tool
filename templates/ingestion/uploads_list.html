@@ -67,6 +67,38 @@
     .terminal-note { color: rgba(255,255,255,.55); font-size: .75rem; margin-top: .3rem; }
 
     dialog { background: rgba(20,25,35,.95); border: 1px solid rgba(248,113,113,.35); border-radius: 12px; color: #fff; max-width: 560px; width: 92%; }
+    dialog::backdrop { background: rgba(2,6,23,.7); }
+    #error-dialog article { margin: 0; border-radius: 14px; border: 1px solid rgba(248,113,113,.3); background: linear-gradient(165deg, rgba(15,23,42,.98), rgba(11,18,34,.98)); }
+    .error-header { display: flex; justify-content: space-between; align-items: center; gap: .75rem; }
+    .error-header h3 { margin: 0; font-size: 2rem; }
+    .modal-close-btn {
+        display: inline-grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 999px;
+        border: 1px solid rgba(148,163,184,.45);
+        background: rgba(15,23,42,.8);
+        color: #dbeafe;
+        font-size: 1.1rem;
+        line-height: 1;
+        cursor: pointer;
+    }
+    .modal-close-btn:hover {
+        border-color: rgba(248,113,113,.85);
+        color: #fecaca;
+        background: rgba(127,29,29,.22);
+    }
+    .error-footer { display: flex; justify-content: flex-end; }
+    .error-close-btn {
+        margin: 0;
+        border-radius: 10px;
+        border: 1px solid rgba(248,113,113,.45);
+        background: rgba(239,68,68,.16);
+        color: #fee2e2;
+        font-weight: 600;
+    }
+    .error-close-btn:hover { background: rgba(239,68,68,.28); }
     .error-content { background: rgba(0,0,0,.3); padding: 1rem; border-radius: 8px; font-family: monospace; color: #ddd; max-height: 260px; overflow-y: auto; }
 
     @media (max-width: 850px) {
@@ -134,19 +166,32 @@
 
 <dialog id="error-dialog">
     <article>
-        <header><h3>Error Details</h3></header>
+        <header class="error-header">
+            <h3>Error Details</h3>
+            <button class="modal-close-btn" aria-label="Close" onclick="closeError()">✕</button>
+        </header>
         <div id="error-text" class="error-content"></div>
-        <footer><button onclick="closeError()">Close</button></footer>
+        <footer class="error-footer"><button class="error-close-btn" onclick="closeError()">Close</button></footer>
     </article>
 </dialog>
 
 <script>
     function showError(msg) {
+        const dialog = document.getElementById('error-dialog');
         document.getElementById('error-text').textContent = msg || 'No error text provided.';
-        document.getElementById('error-dialog').setAttribute('open', true);
+        if (typeof dialog.showModal === 'function') {
+            dialog.showModal();
+        } else {
+            dialog.setAttribute('open', true);
+        }
     }
     function closeError() {
-        document.getElementById('error-dialog').removeAttribute('open');
+        const dialog = document.getElementById('error-dialog');
+        if (dialog.open && typeof dialog.close === 'function') {
+            dialog.close();
+        } else {
+            dialog.removeAttribute('open');
+        }
     }
 
     function getCookie(name) {
