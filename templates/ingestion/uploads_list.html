@@ -67,6 +67,7 @@
     .terminal-note { color: rgba(255,255,255,.55); font-size: .75rem; margin-top: .3rem; }
 
     dialog { background: rgba(20,25,35,.95); border: 1px solid rgba(248,113,113,.35); border-radius: 12px; color: #fff; max-width: 560px; width: 92%; }
+    dialog::backdrop { background: rgba(2,6,23,.7); }
     .error-content { background: rgba(0,0,0,.3); padding: 1rem; border-radius: 8px; font-family: monospace; color: #ddd; max-height: 260px; overflow-y: auto; }
 
     @media (max-width: 850px) {
@@ -142,11 +143,21 @@
 
 <script>
     function showError(msg) {
+        const dialog = document.getElementById('error-dialog');
         document.getElementById('error-text').textContent = msg || 'No error text provided.';
-        document.getElementById('error-dialog').setAttribute('open', true);
+        if (typeof dialog.showModal === 'function') {
+            dialog.showModal();
+        } else {
+            dialog.setAttribute('open', true);
+        }
     }
     function closeError() {
-        document.getElementById('error-dialog').removeAttribute('open');
+        const dialog = document.getElementById('error-dialog');
+        if (dialog.open && typeof dialog.close === 'function') {
+            dialog.close();
+        } else {
+            dialog.removeAttribute('open');
+        }
     }
 
     function getCookie(name) {

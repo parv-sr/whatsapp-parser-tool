@@ -1,60 +1,45 @@
 import logging
 import time
-from typing import Dict, Any, List
-from django.conf import settings
-from openai import OpenAI
+from typing import Any, Dict, List
+
+from apps.embeddings.vector_store import get_embeddings_model
 
 log = logging.getLogger(__name__)
 
-client = OpenAI(api_key=getattr(settings, "OPENAI_API_KEY", None))
 
 def generate_embedding_and_push(text: str, metadata: Dict[str, Any], listing_id: int) -> Dict[str, Any]:
     """
-    Generates an embedding for the given text using OpenAI.
+    Generates an embedding for the given text using LangChain OpenAI embeddings.
     """
     if not text:
         return {}
 
     retries = 3
+    model = get_embeddings_model()
     for attempt in range(retries):
         try:
-            resp = client.embeddings.create(
-                model="text-embedding-3-small",
-                input=text,
-                dimensions=1536 
-            )
-            vector = resp.data[0].embedding
-
+            vector = model.embed_query(text)
             return {
                 "vector_cache": vector,
                 "vector_id": str(listing_id),
-                "index_name": "default"
+                "index_name": "default",
             }
-
         except Exception as e:
-            log.warning(f"OpenAI Embedding failed (attempt {attempt+1}): {e}")
+            log.warning("Embedding failed (attempt %s): %s", attempt + 1, e)
             time.sleep(1)
-            
+
     raise Exception("Failed to generate embedding.")
 
 
 def get_batch_embeddings(texts: List[str]) -> List[List[float]]:
     """
-    Generates embeddings for a list of texts in a SINGLE API call.
+    Generates embeddings for a list of texts in one batch call.
     """
     if not texts:
         return []
 
-    # OpenAI allows batching. We just pass the list.
     try:
-        resp = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=texts,
-            dimensions=1536
-        )
-        # Ensure we return vectors in the same order as inputs
-        sorted_data = sorted(resp.data, key=lambda x: x.index)
-        return [item.embedding for item in sorted_data]
+        return get_embeddings_model().embed_documents(texts)
     except Exception as e:
-        log.error(f"Batch embedding failed: {e}")
+        log.error("Batch embedding failed: %s", e)
         return []

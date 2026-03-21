@@ -3,19 +3,17 @@
 
 {% block content %}
 <style>
-    body {
-        height: 100vh !important;
-        overflow: hidden !important;
+    main {
+        padding-bottom: 7rem;
     }
 
-    main.container {
-        flex: 1;
-        display: flex !important;
+    #chat-shell {
+        width: min(1080px, 100%);
+        margin: 0 auto;
+        height: calc(100vh - 210px);
+        min-height: 420px;
+        display: flex;
         flex-direction: column;
-        min-height: 0;
-        max-width: 100% !important;
-        width: 100%;
-        padding: 0.5rem 0.75rem 0 !important;
     }
 
     #chat-wrapper {
@@ -23,8 +21,6 @@
         flex-direction: column;
         flex: 1;
         min-height: 0;
-        width: min(1080px, 100%);
-        margin: 0 auto;
     }
 
     #chat-window {
@@ -164,6 +160,10 @@
         cursor: pointer;
     }
 
+    dialog::backdrop {
+        background: rgba(2, 6, 23, 0.75);
+    }
+
     dialog article {
         background: rgba(13, 18, 30, 0.96) !important;
         border: 1px solid var(--pico-muted-border-color);
@@ -179,8 +179,8 @@
     }
 
     @media (max-width: 760px) {
-        main.container {
-            padding: 0.3rem 0.4rem 0 !important;
+        #chat-shell {
+            height: calc(100vh - 230px);
         }
 
         #chat-window {
@@ -202,7 +202,7 @@
     }
 </style>
 
-<div id="chat-wrapper"><div id="chat-window"></div></div>
+<div id="chat-shell"><div id="chat-wrapper"><div id="chat-window"></div></div></div>
 
 <div id="chat-input-bar">
     <form id="chat-form">
@@ -241,10 +241,16 @@
     const chatStatus = document.getElementById("chat-status");
     const modal = document.getElementById("source-modal");
 
-    function closeSourceModal() { modal.removeAttribute("open"); }
+    function closeSourceModal() {
+        if (modal.open) modal.close();
+    }
 
     async function openSourceModal(listingId) {
-        modal.setAttribute("open", true);
+        if (typeof modal.showModal === "function") {
+            modal.showModal();
+        } else {
+            modal.setAttribute("open", true);
+        }
         document.getElementById("modal-content").textContent = "Loading original message...";
         try {
             const res = await fetch(`/core/chat/source/${listingId}/`);
