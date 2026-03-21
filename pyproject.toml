@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whatsapp-parser-tool"
+version = "0.1.0"
+description = "Django WhatsApp parser and real-estate RAG assistant"
+requires-python = ">=3.11"
+dependencies = [
+  "django",
+  "psycopg2-binary",
+  "python-dotenv",
+  "openai",
+  "langchain",
+  "langchain-openai",
+  "langchain-qdrant",
+  "langgraph",
+  "qdrant-client",
+  "pydantic",
+  "simhash",
+  "celery",
+  "celery[django]",
+  "django-redis",
+  "redis",
+  "rapidfuzz",
+  "numpy",
+  "ujson",
+  "bleach",
+  "whitenoise",
+  "pgvector",
+  "python-magic",
+  "uvicorn[standard]",
+  "tiktoken",
+  "tenacity",
+  "django-celery-results",
+  "sqlalchemy",
+  "kombu[sqlalchemy]",
+  "rarfile",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["apps*", "config*"]

@@ -16,6 +16,7 @@ from apps.ingestion.models import RawFile, RawMessageChunk
 from apps.ingestion.dedupe.pre_llm_dedupe import PreLLMDedupe
 from apps.ingestion.dedupe.dupe_tracker import DupeTracker
 from apps.preprocessing.models import ListingChunk, EmbeddingRecord
+from apps.embeddings.vector_store import upsert_listing_embeddings
 
 # Extraction
 from apps.preprocessing.extractor import extract_listings_from_batch
@@ -261,6 +262,20 @@ def process_single_llm_batch(batch_data):
 
                         if embedding_objs:
                             EmbeddingRecord.objects.bulk_create(embedding_objs, ignore_conflicts=True)
+
+                            qdrant_rows = []
+                            for lc, vec in zip(saved_chunks, embeddings):
+                                if not vec:
+                                    continue
+                                qdrant_rows.append(
+                                    {
+                                        "listing_chunk_id": lc.id,
+                                        "text": lc.text,
+                                        "metadata": lc.metadata or {},
+                                        "vector": vec,
+                                    }
+                                )
+                            upsert_listing_embeddings(qdrant_rows)
 
                     except Exception as e:
                         log.error("Batch %s Embedding Error: %s", batch_idx, e)
