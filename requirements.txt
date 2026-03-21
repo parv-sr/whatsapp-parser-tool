@@ -6,6 +6,7 @@ openai                  # For calling openai apis
 pydantic                # Provides structure to inference drawn from LLMs
 simhash                 # For deduping using fuzzy matching
 celery                  # For running simultaneous tasks using celery workers
+celery[django]          # same thing as above
 django-redis            # DB utility for celery
 redis                   # Standalone redis installation
 rapidfuzz               # For secondary deduping using fuzzy matching
@@ -13,6 +14,12 @@ numpy                   # ANN Vector search utility (its literally THE numpy)
 ujson                   # Metadata search utility
 bleach                  # Utility for cleaner tabular responses
 whitenoise              # Utility for serving static files
-pgvector                #literally pgvector
-python-magic            #idk
-uvicorn[standard]       #asgi utility
+pgvector                # literally pgvector
+python-magic            # idk
+uvicorn[standard]       # asgi utility
+tiktoken                # token utility for APIs
+tenacity                # HTTP tools
+django-celery-results   # celery backend utility
+sqlalchemy              # DB broker for celery
+kombu[sqlalchemy]       # Another celery backend utility
+rarfile                 # read .rar archives for uploaded chat bundles

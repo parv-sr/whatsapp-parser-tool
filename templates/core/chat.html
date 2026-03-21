@@ -2,253 +2,358 @@
 {% block title %}AI Chat{% endblock %}
 
 {% block content %}
-
 <style>
-    /* --- 1. PAGE LAYOUT --- */
     body {
+        height: 100vh !important;
         overflow: hidden !important;
-        height: 100vh;
     }
 
     main.container {
-        height: 100%;
-        max-width: 100% !important;
-        padding: 0 !important;
-        display: flex;
+        flex: 1;
+        display: flex !important;
         flex-direction: column;
+        min-height: 0;
+        max-width: 100% !important;
+        width: 100%;
+        padding: 0.5rem 0.75rem 0 !important;
     }
 
-    /* --- 2. CHAT WRAPPER --- */
     #chat-wrapper {
         display: flex;
         flex-direction: column;
-        flex-grow: 1;
-        width: 100%;
-        max-width: 1000px;
+        flex: 1;
+        min-height: 0;
+        width: min(1080px, 100%);
         margin: 0 auto;
-        position: relative;
-        height: 100%;
     }
 
-    /* --- 3. CHAT WINDOW (FIXED BOTTOM SCROLL) --- */
     #chat-window {
-        flex-grow: 1;
+        flex: 1;
         overflow-y: auto;
-        
-        /* Top padding for header clearance */
-        padding-top: 6rem; 
-        padding-left: 1rem;
-        padding-right: 1rem;
-        
-        /* We remove padding-bottom here and use the ::after pseudo-element below 
-           This is a robust fix for Chrome/Safari scrolling issues */
-        padding-bottom: 0; 
-
-        scroll-behavior: smooth;
+        padding: 0.5rem 0.25rem 7.5rem;
         scrollbar-width: thin;
-        scrollbar-color: rgba(255,255,255,0.1) transparent;
     }
 
-    /* THE MAGIC FIX: This creates a solid invisible block at the bottom */
-    #chat-window::after {
-        content: "";
-        display: block;
-        height: 15rem; /* Creates exactly enough scrollable space */
-        width: 100%;
-    }
-
-    /* --- 4. MESSAGE BUBBLES --- */
     .msg {
-        max-width: 80%;
-        padding: 0.6rem 1rem; 
-        margin-bottom: 0.8rem;
-        border-radius: 16px;
-        position: relative;
-        animation: slideUp 0.3s cubic-bezier(0.25, 1, 0.5, 1);
-        line-height: 1.5;
-        font-size: 0.9rem; 
-        word-break: break-word;
-        backdrop-filter: blur(10px);
-    }
-
-    @keyframes slideUp {
-        from { opacity: 0; transform: translateY(20px); }
-        to { opacity: 1; transform: translateY(0); }
+        max-width: min(800px, 92%);
+        margin-bottom: 0.65rem;
+        padding: 0.62rem 0.82rem;
+        border-radius: 14px;
+        border: 1px solid var(--pico-muted-border-color);
+        font-size: 0.86rem;
+        line-height: 1.45;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
     }
 
     .user-msg {
-        background: linear-gradient(135deg, var(--pico-primary) 0%, #2f5769 100%);
-        color: white;
         margin-left: auto;
+        color: #eaf4ff;
+        background: linear-gradient(145deg, rgba(30, 64, 175, 0.92), rgba(37, 99, 235, 0.85));
         border-bottom-right-radius: 4px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-        border: 1px solid rgba(255,255,255,0.1);
     }
 
     .assistant-msg {
-        background: rgba(0, 0, 0, 0.4);
-        color: #e0e0e0;
         margin-right: auto;
+        color: #dde7f8;
+        background: rgba(17, 24, 39, 0.8);
         border-bottom-left-radius: 4px;
-        border: 1px solid rgba(255, 255, 255, 0.05);
     }
 
-    /* --- 5. TABLE STYLING --- */
+    .msg h1, .msg h2, .msg h3, .msg h4 {
+        margin: 0.3rem 0;
+        font-size: 0.92rem;
+    }
+
+    .msg p, .msg li {
+        margin: 0.28rem 0;
+    }
+
+    .msg ul, .msg ol {
+        margin: 0.32rem 0 0.42rem 1rem;
+    }
+
     .msg table {
+        width: 100%;
         display: block;
         overflow-x: auto;
-        width: 100%;
-        border-collapse: separate;
-        border-spacing: 0;
-        margin: 0.5rem 0 0.2rem 0;
-        background: rgba(0,0,0,0.3);
-        border-radius: 8px;
-        border: 1px solid rgba(255,255,255,0.05);
+        border-collapse: collapse;
+        margin-top: 0.5rem;
     }
 
-    .user-msg table { background: rgba(0,0,0,0.1); color: white; }
-
     .msg th, .msg td {
+        padding: 0.42rem 0.56rem;
         white-space: nowrap;
-        padding: 0.5rem 0.8rem;
-        border-bottom: 1px solid rgba(255,255,255,0.05);
-        text-align: left;
-        font-size: 0.85rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        font-size: 0.8rem;
     }
 
     .msg th {
-        background: rgba(0,0,0,0.2);
-        font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
-        color: rgba(255,255,255,0.6);
+        letter-spacing: 0.04em;
+        color: #93c5fd;
+        font-size: 0.72rem;
     }
-    .msg tr:last-child td { border-bottom: none; }
 
-    /* --- 6. FLOATING INPUT BAR --- */
     #chat-input-bar {
         position: fixed;
-        bottom: 30px;
         left: 50%;
+        bottom: 14px;
         transform: translateX(-50%);
-        width: 90%;
-        max-width: 800px;
-        z-index: 1000;
-        background: transparent !important;
+        width: min(1020px, 96%);
+        z-index: 80;
     }
 
     #chat-form {
-        display: flex;
+        display: grid;
+        grid-template-columns: 170px 1fr auto auto;
+        gap: 0.5rem;
         align-items: center;
-        gap: 10px;
-        padding: 6px 6px 6px 20px;
-        background: rgba(0, 0, 0, 0.5); 
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 100px;
-        box-shadow: 0 5px 20px rgba(0,0,0,0.2); 
+        padding: 0.5rem;
+        border: 1px solid var(--pico-muted-border-color);
+        border-radius: 14px;
+        background: rgba(12, 18, 32, 0.92);
+        backdrop-filter: blur(10px);
     }
 
+    .control,
     #chat-input {
-        flex: 1;
-        border: none !important;
-        background: transparent !important;
-        color: white !important;
-        font-size: 0.95rem;
-        padding: 5px;
-        outline: none !important;
-        box-shadow: none !important;
+        height: 38px;
+        margin: 0;
+        border-radius: 10px;
+        font-size: 0.82rem;
+        padding: 0 0.7rem;
     }
-    
-    #chat-input::placeholder { color: rgba(255,255,255,0.4); }
+
+    #chat-input::placeholder {
+        color: rgba(226, 232, 240, 0.6);
+    }
+
+    #chat-status {
+        font-size: 0.72rem;
+        color: #9fb0c5;
+        min-width: 96px;
+        text-align: right;
+    }
 
     .send-btn {
-        width: 45px !important;
-        height: 45px !important;
-        border-radius: 50%;
-        background: var(--pico-primary-background);
+        width: 38px;
+        height: 38px;
+        margin: 0;
+        border-radius: 999px;
         border: none;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: all 0.2s ease;
+        background: linear-gradient(145deg, #0ea5e9, #2563eb);
+        display: grid;
+        place-items: center;
         cursor: pointer;
-        flex-shrink: 0;
-        padding: 0;
-    }
-
-    .send-btn:hover {
-        transform: scale(1.05);
-        filter: brightness(1.2);
     }
 
     .send-btn svg {
-        width: 20px;
-        height: 20px;
-        fill: white !important;
-        margin-left: 2px;
+        width: 16px;
+        height: 16px;
+        fill: white;
+    }
+
+    .source-btn {
+        margin: 0;
+        padding: 0.2rem 0.5rem;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        border: 1px solid rgba(56, 189, 248, 0.55);
+        background: rgba(14, 165, 233, 0.14);
+        color: #7dd3fc;
+        cursor: pointer;
+    }
+
+    dialog article {
+        background: rgba(13, 18, 30, 0.96) !important;
+        border: 1px solid var(--pico-muted-border-color);
+    }
+
+    .raw-msg-box {
+        max-height: 50vh;
+        overflow-y: auto;
+        padding: 0.75rem;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.35);
+        font-size: 0.8rem;
+    }
+
+    @media (max-width: 760px) {
+        main.container {
+            padding: 0.3rem 0.4rem 0 !important;
+        }
+
+        #chat-window {
+            padding-bottom: 8.2rem;
+        }
+
+        #chat-form {
+            grid-template-columns: 1fr auto;
+        }
+
+        #model-select,
+        #chat-status {
+            grid-column: 1 / -1;
+        }
+
+        #chat-status {
+            text-align: left;
+        }
     }
 </style>
 
-<div id="chat-wrapper">
-    <div id="chat-window">
-        </div>
-</div>
+<div id="chat-wrapper"><div id="chat-window"></div></div>
 
 <div id="chat-input-bar">
     <form id="chat-form">
-        <input type="text" id="chat-input" placeholder="Ask about properties…" required autocomplete="off">
-        <button type="submit" class="send-btn">
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
+        <select id="model-select" class="control" aria-label="Model selector">
+            {% for model in available_models %}
+            <option value="{{ model }}" {% if model == default_model %}selected{% endif %}>{{ model }}</option>
+            {% endfor %}
+        </select>
+        <input type="text" id="chat-input" placeholder="Ask about rent/lease/sale listings in your uploaded chats..." required autocomplete="off">
+        <small id="chat-status">Ready</small>
+        <button type="submit" class="send-btn" aria-label="Send">
+            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
         </button>
     </form>
 </div>
 
+<dialog id="source-modal">
+    <article>
+        <header>
+            <button aria-label="Close" rel="prev" onclick="closeSourceModal()"></button>
+            <h3>Original Message</h3>
+        </header>
+        <p style="font-size:0.9rem;color:#94a3b8;margin-bottom:.5rem;">Sender: <span id="modal-sender" style="color:white"></span> | Time: <span id="modal-time" style="color:white"></span></p>
+        <pre id="modal-content" class="raw-msg-box">Loading...</pre>
+    </article>
+</dialog>
+
 {{ history|json_script:"chat-history" }}
-
-<script>
-    const serverHistory = JSON.parse(document.getElementById("chat-history").textContent);
-</script>
-
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
+    const serverHistory = JSON.parse(document.getElementById("chat-history").textContent);
     const chatWindow = document.getElementById("chat-window");
     const chatForm = document.getElementById("chat-form");
     const chatInput = document.getElementById("chat-input");
+    const modelSelect = document.getElementById("model-select");
+    const chatStatus = document.getElementById("chat-status");
+    const modal = document.getElementById("source-modal");
 
-    function loadChatHistory() {
-        const history = JSON.parse(localStorage.getItem("chatHistory") || "[]");
-        chatWindow.innerHTML = "";
-        history.forEach(msg => {
-            chatWindow.appendChild(formatMessage(msg.role, msg.text));
+    function closeSourceModal() { modal.removeAttribute("open"); }
+
+    async function openSourceModal(listingId) {
+        modal.setAttribute("open", true);
+        document.getElementById("modal-content").textContent = "Loading original message...";
+        try {
+            const res = await fetch(`/core/chat/source/${listingId}/`);
+            if (!res.ok) throw new Error("Fetch failed");
+            const data = await res.json();
+            document.getElementById("modal-content").textContent = data.raw_text || "N/A";
+            document.getElementById("modal-sender").textContent = data.sender || "Unknown";
+            document.getElementById("modal-time").textContent = data.timestamp || "N/A";
+        } catch {
+            document.getElementById("modal-content").textContent = "Error loading source message.";
+        }
+    }
+
+    function enhanceSourceButtons(root) {
+        root.querySelectorAll("table").forEach(table => {
+            let idColIndex = -1;
+            table.querySelectorAll("th").forEach((th, idx) => {
+                const txt = th.textContent.trim().toLowerCase();
+                if (txt === "id" || txt === "_id") { idColIndex = idx; th.textContent = "source"; }
+            });
+            if (idColIndex === -1) return;
+            table.querySelectorAll("tbody tr").forEach(row => {
+                const cells = row.querySelectorAll("td");
+                const target = cells[idColIndex];
+                if (!target) return;
+                const idVal = target.textContent.trim();
+                target.innerHTML = "";
+                const btn = document.createElement("button");
+                btn.className = "source-btn";
+                btn.textContent = "View Message";
+                btn.onclick = () => openSourceModal(idVal);
+                target.appendChild(btn);
+            });
         });
-        chatWindow.scrollTop = chatWindow.scrollHeight;
     }
 
-    function saveMessage(role, text) {
-        const history = JSON.parse(localStorage.getItem("chatHistory") || "[]");
-        history.push({ role, text });
-        localStorage.setItem("chatHistory", JSON.stringify(history));
-    }
-    
-    function formatMessage(role, text) {
+    function formatMessage(role, text, streaming=false) {
         const div = document.createElement("div");
         div.classList.add("msg", role === "user" ? "user-msg" : "assistant-msg");
         if (role === "assistant") {
-            div.innerHTML = marked.parse(text);
+            div.innerHTML = marked.parse(text || "");
+            if (!streaming) enhanceSourceButtons(div);
         } else {
-            div.innerHTML = text; 
+            div.textContent = text;
         }
         return div;
     }
 
-    //loadChatHistory();
+    function scrollBottom() { chatWindow.scrollTop = chatWindow.scrollHeight; }
 
-    serverHistory.forEach(msg => {
-        const bubble = formatMessage(msg.role, msg.content);
-        chatWindow.appendChild(bubble);
-    });
+    serverHistory.forEach(msg => chatWindow.appendChild(formatMessage(msg.role, msg.content)));
+    scrollBottom();
+
+    async function streamAnswer(question) {
+        const selectedModel = modelSelect.value;
+        chatStatus.textContent = "Thinking...";
+
+        const assistantBubble = formatMessage("assistant", "", true);
+        chatWindow.appendChild(assistantBubble);
+        scrollBottom();
+
+        const res = await fetch("/core/chat/stream/", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": "{{ csrf_token }}"
+            },
+            body: JSON.stringify({ query: question, model: selectedModel, top_k: 8 })
+        });
+
+        if (!res.ok || !res.body) {
+            assistantBubble.innerHTML = marked.parse("⚠️ Request failed.");
+            chatStatus.textContent = "Failed";
+            return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let answer = "";
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const evt = JSON.parse(line);
+                    if (evt.type === "token") {
+                        answer += evt.delta || "";
+                        assistantBubble.innerHTML = marked.parse(answer);
+                        scrollBottom();
+                    } else if (evt.type === "done") {
+                        chatStatus.textContent = `Model: ${evt.model || selectedModel}`;
+                    } else if (evt.type === "error") {
+                        chatStatus.textContent = "Stream error";
+                    }
+                } catch (_) {}
+            }
+        }
+
+        assistantBubble.innerHTML = marked.parse(answer || "⚠️ Empty response.");
+        enhanceSourceButtons(assistantBubble);
+        scrollBottom();
+    }
 
     chatForm.addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -256,27 +361,15 @@
         if (!question) return;
 
         chatWindow.appendChild(formatMessage("user", question));
-        saveMessage("user", question);
         chatInput.value = "";
-        chatWindow.scrollTop = chatWindow.scrollHeight;
+        scrollBottom();
 
-        const res = await fetch("/core/chat/query/", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "X-CSRFToken": "{{ csrf_token }}"
-            },
-            body: JSON.stringify({ query: question, top_k: 5 })
-        });
-
-        const data = await res.json();
-        let answer = data.answer || "⚠️ Error retrieving response.";
-
-        chatWindow.appendChild(formatMessage("assistant", answer));
-        saveMessage("assistant", answer);
-
-        chatWindow.scrollTop = chatWindow.scrollHeight;
+        try {
+            await streamAnswer(question);
+        } catch {
+            chatWindow.appendChild(formatMessage("assistant", "⚠️ Connection error."));
+            chatStatus.textContent = "Connection error";
+        }
     });
 </script>
-
 {% endblock %}

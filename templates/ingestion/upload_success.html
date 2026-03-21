@@ -1,222 +1,92 @@
 {% extends "base.html" %}
+{% load static %}
+
+{% block title %}Upload status • WhatsApp Parser{% endblock %}
+
 {% block content %}
-
 <style>
-    /* Layout (unchanged) */
-    .success-container {
-        max-width: 800px;
-        margin: 0 auto;
-        padding: 2rem 1rem;
-    }
-
-    .glass-panel {
-        background: rgba(255, 255, 255, 0.03);
-        backdrop-filter: blur(12px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 16px;
-        padding: 2rem;
-        margin-bottom: 2rem;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.2);
-    }
-
-    h2 { color: white; margin-bottom: 0.5rem; text-align: center; }
-    h3 { color: var(--pico-primary); font-size: 1.1rem; margin: 0 0 1rem; text-transform: uppercase; letter-spacing: 1px; }
-
-    /* File List (unchanged) */
-    .file-list {
-        list-style: none; padding: 0; margin: 0;
-    }
-    .file-list li {
-        background: rgba(255,255,255,0.05);
-        margin-bottom: 0.5rem;
-        padding: 0.75rem 1rem;
-        border-radius: 8px;
-        color: white;
-        display: flex;
-        align-items: center;
-        border: 1px solid rgba(255,255,255,0.05);
-    }
-    .file-list li::before {
-        content: "File";
-        margin-right: 10px;
-    }
-
-    /* Processing List */
-    #processing-list {
-        list-style: none;
-        padding: 0;
-        margin: 0;
-    }
-    #processing-list li {
-        background: rgba(0,0,0,0.25);
-        padding: 1.2rem;
-        border-radius: 12px;
-        margin-bottom: 1rem;
-        border: 1px solid rgba(255,255,255,0.08);
-        transition: all 0.4s ease;
-    }
-    #processing-list li.done {
-        opacity: 0.7;
-        border-color: #4ade80;
-    }
-
-    /* THE FIX: Fully styleable progress bar */
-    progress {
-        display: block;
-        width: 100%;
-        height: 12px;
-        margin: 0.8rem 0 0;
-        border: none;
-        border-radius: 10px;
-        background-color: rgba(255,255,255,0.1);
-        overflow: hidden;
-
-        /* Critical: Remove native appearance */
-        appearance: none;
-        -webkit-appearance: none;
-        -moz-appearance: none;
-    }
-
-    /* WebKit (Chrome, Safari, Edge) */
-    progress::-webkit-progress-bar {
-        background-color: rgba(255,255,255,0.1);
-        border-radius: 10px;
-    }
-    progress::-webkit-progress-value {
-        background: linear-gradient(90deg, var(--pico-primary), #00ffd5);
-        border-radius: 10px;
-        box-shadow: 0 0 15px rgba(0, 255, 200, 0.5);
-        transition: width 0.4s ease;
-    }
-
-    /* Firefox */
-    progress::-moz-progress-bar {
-        background: linear-gradient(90deg, var(--pico-primary), #00ffd5);
-        border-radius: 10px;
-        box-shadow: 0 0 15px rgba(0, 255, 200, 0.5);
-    }
-
-    /* Status */
-    .status-text { 
-        color: #aaa; 
-        font-size: 0.95rem; 
-        margin-left: 0.5rem; 
-    }
-    .status-success { 
-        color: #4ade80 !important; 
-        font-weight: bold; 
-        text-shadow: 0 0 10px rgba(74, 222, 128, 0.5); 
-    }
-
-    .btn-secondary {
-        display: inline-block;
-        margin-top: 1.5rem;
-        padding: 0.7rem 1.5rem;
-        background: rgba(255,255,255,0.08);
-        color: white;
-        text-decoration: none;
-        border: 1px solid rgba(255,255,255,0.2);
-        border-radius: 12px;
-        transition: all 0.3s;
-    }
-    .btn-secondary:hover {
-        background: rgba(255,255,255,0.15);
-        border-color: var(--pico-primary);
-        transform: translateY(-2px);
-    }
+    .status-wrap { max-width: 980px; margin: 0 auto; display: grid; gap: 1rem; }
+    .status-card { padding: 1.3rem; }
+    .file-list { margin: 0; padding-left: 1rem; color: #c0d2ef; }
+    .track-item { border: 1px solid rgba(148,163,184,.25); border-radius: 12px; padding: .8rem; margin-bottom: .8rem; }
+    .stage-meter { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: .6rem; }
+    .stage-cell { height: 9px; border-radius: 999px; background: rgba(148,163,184,.25); }
+    .stage-cell.on { background: linear-gradient(90deg,#25d366,#60a5fa); }
+    .status-success { color: #7ff6ad !important; font-weight: 700; }
 </style>
 
-<div class="success-container">
-    <h2>Upload Successful</h2>
-    <p style="text-align:center; color:#ccc;">Your WhatsApp chats are being parsed in the background. Sit back!</p>
-
-    <div class="glass-panel">
-        <h3>Uploaded Files</h3>
+<section class="status-wrap">
+    <article class="glass-card status-card">
+        <h2 class="h4 mb-3">Upload summary</h2>
         {% if uploaded_files %}
-        <ul class="file-list">
-            {% for file in uploaded_files %}
-            <li>{{ file }}</li>
-            {% endfor %}
-        </ul>
+            <ul class="file-list">
+                {% for file in uploaded_files %}<li>{{ file }}</li>{% endfor %}
+            </ul>
         {% else %}
-        <p>No files uploaded.</p>
+            <p class="mb-0">No files uploaded.</p>
         {% endif %}
-    </div>
+    </article>
 
-    <div class="glass-panel">
-        <h3>Processing Status</h3>
-        <div id="processing-container">
-            {% if processing_files %}
-            <ul id="processing-list">
+    <article class="glass-card status-card">
+        <h3 class="h5 mb-3">Live processing status</h3>
+        {% if processing_files %}
+            <ul id="processing-list" class="list-unstyled mb-0">
                 {% for file_id in processing_files %}
-                <li id="file-wrapper-{{ file_id }}">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <strong>File ID: {{ file_id }}</strong>
-                        <span id="status-{{ file_id }}" class="status-text">starting…</span>
-                    </div>
-                    <progress id="progress-{{ file_id }}" value="0" max="100"></progress>
-                </li>
+                    <li id="file-wrapper-{{ file_id }}" class="track-item">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <strong><i class="bi bi-file-earmark-text me-1"></i>File ID {{ file_id }}</strong>
+                            <span id="status-{{ file_id }}" class="text-secondary">Starting…</span>
+                        </div>
+                        <div id="meter-{{ file_id }}" class="stage-meter">
+                            <span class="stage-cell on"></span><span class="stage-cell"></span><span class="stage-cell"></span><span class="stage-cell"></span><span class="stage-cell"></span>
+                        </div>
+                    </li>
                 {% endfor %}
             </ul>
-            {% else %}
-            <p>All done! Redirecting shortly…</p>
-            {% endif %}
-        </div>
-    </div>
+        {% else %}
+            <p class="mb-0">No active processing jobs.</p>
+        {% endif %}
+    </article>
 
-    <div style="text-align: center;">
-        <a href="{% url 'ingestion:uploads_list' %}" class="btn-secondary">
-            View All Processed Chats
-        </a>
+    <div class="text-center">
+        <a href="{% url 'ingestion:uploads_list' %}" class="btn btn-outline-light"><i class="bi bi-list-check me-2"></i>Go to uploads dashboard</a>
     </div>
-</div>
+</section>
 
+{{ processing_files|default:"[]"|json_script:"processing-file-ids" }}
+<script src="{% static 'js/progress_poller.js' %}"></script>
 <script>
-    // Prevent multiple intervals (Django template caching issue)
-    if (!window.__progressPolling) {
-        window.__progressPolling = true;
+    document.addEventListener("DOMContentLoaded", function() {
+        const fileIds = JSON.parse(document.getElementById("processing-file-ids").textContent || "[]");
+        if (!fileIds.length) return;
 
-        async function updateProgress() {
-            try {
-                const resp = await fetch("/ingestion/progress/");
-                if (!resp.ok) return;
-                const data = await resp.json();
+        const poller = new ProgressPoller({
+            ids: fileIds,
+            url: "{% url 'ingestion:progress_status' %}",
+            interval: 1500,
+            onUpdate: function(files, pollerInstance) {
+                files.forEach(f => {
+                    const meter = document.getElementById(`meter-${f.id}`);
+                    const stat = document.getElementById(`status-${f.id}`);
+                    const wrapper = document.getElementById(`file-wrapper-${f.id}`);
+                    if (meter) {
+                        const stage = Math.max(0, Math.min(5, f.stage || 0));
+                        meter.querySelectorAll('.stage-cell').forEach((c, i) => c.classList.toggle('on', i < stage));
+                    }
 
-                if (!data.files || data.files.length === 0) {
-                    clearInterval(window.__progressInterval);
-                    return;
-                }
+                    if (stat) stat.textContent = f.stage_label || f.status;
 
-                let allDone = true;
-                data.files.forEach(f => {
-                    const prog = document.getElementById("progress-" + f.id);
-                    const stat = document.getElementById("status-" + f.id);
-                    const wrapper = document.getElementById("file-wrapper-" + f.id);
-
-                    if (!prog || !stat) return;
-
-                    prog.value = f.progress;
-
-                    if (f.progress >= 100) {
-                        stat.textContent = "Completed!";
-                        stat.classList.add("status-success");
-                        wrapper.style.borderColor = "#4ade80";
-                        setTimeout(() => wrapper.style.opacity = "0.6", 1000);
-                    } else {
-                        stat.textContent = f.progress + "%";
-                        allDone = false;
+                    if (f.status === 'COMPLETED') {
+                        if (stat) stat.classList.add('status-success');
+                        pollerInstance.completedIds.add(f.id);
+                    } else if (f.status === 'FAILED' || f.status === 'CANCELLED') {
+                        if (wrapper) wrapper.classList.add('opacity-75');
+                        pollerInstance.completedIds.add(f.id);
                     }
                 });
-
-                if (allDone) clearInterval(window.__progressInterval);
-            } catch (err) {
-                console.warn("Progress fetch failed", err);
             }
-        }
-
-        updateProgress();
-        window.__progressInterval = setInterval(updateProgress, 1800);
-    }
+        });
+        poller.start();
+    });
 </script>
-
 {% endblock %}
