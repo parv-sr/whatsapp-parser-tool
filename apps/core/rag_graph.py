@@ -1,5 +1,6 @@
 import asyncio
 import json
+import hashlib
 import logging
 import re
 from collections import defaultdict
@@ -7,6 +8,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from django.conf import settings
 from django.db import connection
+from django.core.cache import cache
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -27,6 +29,21 @@ LEASE_TERMS = {"lease", "leave and license", "l&l", "license"}
 RENT_TERMS = {"rent", "rental", "tenant", "let out"}
 CHAT_MODEL = getattr(settings, "CHAT_MODEL", "gpt-4o-mini")
 ALLOWED_CHAT_MODELS = getattr(settings, "OPENAI_CHAT_MODELS", ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"])
+
+
+def _cache_key(prefix: str, payload: Any) -> str:
+    encoded = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return f"rag:{prefix}:{digest}"
+
+
+async def _aget_or_set_cache(cache_key: str, ttl_seconds: int, compute_fn):
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    value = await compute_fn()
+    cache.set(cache_key, value, timeout=ttl_seconds)
+    return value
 
 
 class RAGState(TypedDict, total=False):
@@ -350,38 +367,69 @@ def _route_after_retrieve(state: RAGState) -> str:
     return "reject" if state.get("reject") else "respond"
 
 
-def _retrieve_node(state: RAGState) -> RAGState:
+async def _hybrid_retrieve_async(query: str, top_k: int) -> List[Dict[str, Any]]:
+    cache_key = _cache_key("hybrid", {"q": query, "k": top_k})
+
+    async def _compute() -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(_hybrid_retrieve, query, top_k)
+
+    return await _aget_or_set_cache(cache_key, 90, _compute)
+
+
+async def _load_contexts_async(nearest: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    cache_key = _cache_key("ctx", nearest)
+
+    async def _compute() -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(_load_contexts, nearest)
+
+    return await _aget_or_set_cache(cache_key, 90, _compute)
+
+
+async def _retrieve_node(state: RAGState) -> RAGState:
     query = state.get("query", "")
     top_k = max(1, min(30, int(state.get("top_k") or DEFAULT_TOP_K)))
-    nearest = _hybrid_retrieve(query, top_k=top_k)
-    contexts = _load_contexts(nearest)
+    nearest = await _hybrid_retrieve_async(query, top_k=top_k)
+    contexts = await _load_contexts_async(nearest)
     reject = _is_gibberish(query) or (not contexts and not _is_domain_query(query))
     return {"nearest": nearest, "contexts": contexts, "reject": reject}
 
 
-def _reject_node(_: RAGState) -> RAGState:
-    return {"answer": _reject_text()}
+async def _reject_node(_: RAGState) -> RAGState:
+    cache_key = _cache_key("reject", "static")
+
+    async def _compute() -> RAGState:
+        return {"answer": _reject_text()}
+
+    return await _aget_or_set_cache(cache_key, 3600, _compute)
 
 
-def _respond_node(state: RAGState) -> RAGState:
+async def _respond_node(state: RAGState) -> RAGState:
     model = state.get("model") if state.get("model") in ALLOWED_CHAT_MODELS else CHAT_MODEL
     temperature = float(state.get("temperature", 0.0))
     query = state.get("query", "")
     contexts = state.get("contexts", [])
     memory = state.get("memory", "")
 
-    messages = _build_messages(query, contexts, memory=memory)
-    llm = ChatOpenAI(
-        model=model,
-        api_key=getattr(settings, "OPENAI_API_KEY", None),
-        temperature=temperature,
-        max_tokens=900,
+    cache_key = _cache_key(
+        "resp",
+        {"model": model, "temperature": temperature, "query": query, "contexts": contexts, "memory": memory},
     )
-    response = llm.invoke(messages)
-    answer = (response.content or "").strip() if response else ""
-    if not answer:
-        answer = "I couldn't find enough listing evidence to answer that reliably."
-    return {"answer": answer, "messages": messages, "model": model}
+
+    async def _compute() -> RAGState:
+        messages = _build_messages(query, contexts, memory=memory)
+        llm = ChatOpenAI(
+            model=model,
+            api_key=getattr(settings, "OPENAI_API_KEY", None),
+            temperature=temperature,
+            max_tokens=900,
+        )
+        response = await llm.ainvoke(messages)
+        answer = (response.content or "").strip() if response else ""
+        if not answer:
+            answer = "I couldn't find enough listing evidence to answer that reliably."
+        return {"answer": answer, "messages": messages, "model": model}
+
+    return await _aget_or_set_cache(cache_key, 60, _compute)
 
 
 def build_rag_graph():
@@ -399,7 +447,7 @@ def build_rag_graph():
 RAG_WORKFLOW = build_rag_graph()
 
 
-def run_rag(query: str, top_k: int = DEFAULT_TOP_K, model: str = CHAT_MODEL, temperature: float = 0.0, memory: str = "") -> RAGState:
+async def run_rag(query: str, top_k: int = DEFAULT_TOP_K, model: str = CHAT_MODEL, temperature: float = 0.0, memory: str = "") -> RAGState:
     state: RAGState = {
         "query": query,
         "top_k": top_k,
@@ -407,7 +455,7 @@ def run_rag(query: str, top_k: int = DEFAULT_TOP_K, model: str = CHAT_MODEL, tem
         "temperature": temperature,
         "memory": memory,
     }
-    return RAG_WORKFLOW.invoke(state)
+    return await RAG_WORKFLOW.ainvoke(state)
 
 
 def stream_llm_from_state(state: RAGState):

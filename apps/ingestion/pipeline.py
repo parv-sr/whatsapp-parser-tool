@@ -1,4 +1,5 @@
 # apps/ingestion/pipeline.py
+import asyncio
 import re
 import hashlib
 import logging
@@ -16,7 +17,7 @@ from apps.ingestion.models import RawFile, RawMessageChunk
 from apps.ingestion.dedupe.pre_llm_dedupe import PreLLMDedupe
 from apps.ingestion.dedupe.dupe_tracker import DupeTracker
 from apps.preprocessing.models import ListingChunk, EmbeddingRecord
-from apps.embeddings.vector_store import upsert_listing_embeddings
+from apps.embeddings.vector_store import aupsert_listing_embeddings
 
 # Extraction
 from apps.preprocessing.extractor import extract_listings_from_batch
@@ -96,6 +97,20 @@ def _generate_dedupe_hash(cleaned_text: str, sender: str) -> str:
     raw_key = f"{norm_text}|{norm_sender}"
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
+
+
+
+def _async_cache_key(prefix: str, payload: str) -> str:
+    return f"pipeline:{prefix}:{payload}"
+
+
+async def _aget_or_set_pipeline_cache(cache_key: str, ttl_seconds: int, compute_fn):
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    value = await compute_fn()
+    cache.set(cache_key, value, timeout=ttl_seconds)
+    return value
 
 def stream_chat_messages(file_obj):
     buffer = []
@@ -275,7 +290,7 @@ def process_single_llm_batch(batch_data):
                                         "vector": vec,
                                     }
                                 )
-                            upsert_listing_embeddings(qdrant_rows)
+                            asyncio.run(aupsert_listing_embeddings(qdrant_rows))
 
                     except Exception as e:
                         log.error("Batch %s Embedding Error: %s", batch_idx, e)
@@ -290,7 +305,7 @@ def process_single_llm_batch(batch_data):
         connection.close()
 
 
-def process_file_in_background(raw_file_id: int):
+def _process_file_in_background_sync(raw_file_id: int):
     """
     Orchestrator: Chunk -> ThreadPool
     """
@@ -413,7 +428,7 @@ def process_file_in_background(raw_file_id: int):
         _append_runtime_log(raw_file_id, "info", f"Dispatching {len(llm_batches)} extraction batches")
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            future_map = {executor.submit(process_single_llm_batch, b): b for b in llm_batches}
+            future_map = {executor.submit(lambda payload: asyncio.run(process_single_llm_batch_async(payload)), b): b for b in llm_batches}
 
             for future in as_completed(future_map):
                 if _cancel_requested(raw_file_id):
@@ -476,3 +491,26 @@ def process_file_in_background(raw_file_id: int):
         cache.set(f"progress:{raw_file_id}", 0)
         _append_runtime_log(raw_file_id, "error", f"Pipeline failed: {e}")
         _remove_from_active_processing(raw_file_id)
+
+async def process_single_llm_batch_async(batch_data):
+    batch_idx, chunk_ids, raw_file_id = batch_data
+    cache_key = _async_cache_key("batch", f"{raw_file_id}:{batch_idx}:{len(chunk_ids)}")
+
+    async def _compute():
+        return await asyncio.to_thread(process_single_llm_batch, batch_data)
+
+    return await _aget_or_set_pipeline_cache(cache_key, 120, _compute)
+
+
+async def process_file_in_background_async(raw_file_id: int):
+    cache_key = _async_cache_key("file", str(raw_file_id))
+
+    async def _compute():
+        await asyncio.to_thread(_process_file_in_background_sync, raw_file_id)
+        return {"raw_file_id": raw_file_id, "status": "completed"}
+
+    return await _aget_or_set_pipeline_cache(cache_key, 30, _compute)
+
+
+def process_file_in_background(raw_file_id: int):
+    return asyncio.run(process_file_in_background_async(raw_file_id))
