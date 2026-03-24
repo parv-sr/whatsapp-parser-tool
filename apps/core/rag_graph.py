@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -11,7 +12,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
-from apps.embeddings.vector_store import build_qdrant_filter, get_qdrant_vectorstore
+from apps.embeddings.vector_store import build_pg_filter, get_vectorstore, get_vectorstore_async
 from apps.preprocessing.models import ListingChunk
 
 log = logging.getLogger(__name__)
@@ -148,9 +149,9 @@ def _is_gibberish(query: str) -> bool:
 
 
 def _fetch_top_k_by_vector(query: str, filters: Dict[str, Any], top_k: int) -> List[Dict[str, Any]]:
-    vectorstore = get_qdrant_vectorstore()
-    qdrant_filter = build_qdrant_filter(filters)
-    docs = vectorstore.similarity_search_with_score(query=query, k=top_k, filter=qdrant_filter)
+    vectorstore = get_vectorstore()
+    pg_filter = build_pg_filter(filters)
+    docs = vectorstore.similarity_search_with_score(query=query, k=top_k, filter=pg_filter or None)
 
     results: List[Dict[str, Any]] = []
     for doc, score in docs:
@@ -168,6 +169,38 @@ def _fetch_top_k_by_vector(query: str, filters: Dict[str, Any], top_k: int) -> L
         )
     return results
 
+
+
+
+async def _afetch_top_k_by_vector(query: str, filters: Dict[str, Any], top_k: int) -> List[Dict[str, Any]]:
+    vectorstore = await get_vectorstore_async()
+    pg_filter = build_pg_filter(filters)
+
+    if hasattr(vectorstore, "asimilarity_search_with_score"):
+        docs = await vectorstore.asimilarity_search_with_score(query=query, k=top_k, filter=pg_filter or None)
+    else:
+        docs = await asyncio.to_thread(
+            vectorstore.similarity_search_with_score,
+            query,
+            top_k,
+            pg_filter or None,
+        )
+
+    results: List[Dict[str, Any]] = []
+    for doc, score in docs:
+        meta = doc.metadata or {}
+        listing_id = meta.get("listing_chunk_id")
+        if listing_id is None:
+            listing_id = (meta.get("metadata") or {}).get("listing_chunk_id")
+        if listing_id is None:
+            continue
+        results.append(
+            {
+                "listing_chunk_id": int(listing_id),
+                "distance": float(score) if score is not None else None,
+            }
+        )
+    return results
 
 def _fetch_top_k_by_keyword(query: str, top_k: int) -> List[Dict[str, Any]]:
     terms = [t for t in re.split(r"\W+", query.lower()) if len(t) > 2]
