@@ -5,9 +5,9 @@ python-dotenv           # For reading environemnt variables.
 openai                  # For calling openai apis
 langchain               # LangChain core runtime
 langchain-openai        # OpenAI wrappers for LangChain
-langchain-qdrant        # Qdrant vector store integration
+langchain-postgres      # PostgreSQL/pgvector vector store integration
+psycopg[binary]         # PostgreSQL driver for langchain-postgres
 langgraph               # Graph orchestration for RAG workflow
-qdrant-client           # Qdrant client SDK
 pydantic                # Provides structure to inference drawn from LLMs
 simhash                 # For deduping using fuzzy matching
 celery                  # For running simultaneous tasks using celery workers

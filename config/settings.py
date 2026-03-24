@@ -215,10 +215,9 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "1536"))
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")
 
-QDRANT_URL = os.getenv("QDRANT_URL", None)
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "") or None
-QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "listing_chunks")
-QDRANT_LOCAL_PATH = os.getenv("QDRANT_LOCAL_PATH", ":memory:")
+VECTOR_DB_URL = os.getenv("VECTOR_DB_URL", "") or None
+VECTOR_COLLECTION_NAME = os.getenv("VECTOR_COLLECTION_NAME", "property_embeddings")
+VECTOR_INSERT_BATCH_SIZE = int(os.getenv("VECTOR_INSERT_BATCH_SIZE", "256"))
 
 OPENAI_CHAT_MODELS = [
     "gpt-4o-mini",
