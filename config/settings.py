@@ -28,7 +28,7 @@ ALLOWED_HOSTS = [
     'bandrahomes.in',
     'www.bandrahomes.in', 
     'localhost', 
-    '127.0.0.1'
+    '127.0.0.1',
 ]
 
 # --- APPLICATION DEFINITION ---
