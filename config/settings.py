@@ -24,6 +24,7 @@ DEBUG = os.getenv("DEBUG", "False") == "True"
 
 ALLOWED_HOSTS = [
     'whatsapp-parser-tool.onrender.com',
+    'whatsapp-parser-tool-t838.onrender.com',
     'bandrahomes.in',
     'www.bandrahomes.in', 
     'localhost', 
@@ -214,7 +215,7 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "1536"))
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")
 
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_URL = os.getenv("QDRANT_URL", None)
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "") or None
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "listing_chunks")
 QDRANT_LOCAL_PATH = os.getenv("QDRANT_LOCAL_PATH", ":memory:")
