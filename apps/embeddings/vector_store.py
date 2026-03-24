@@ -1,18 +1,21 @@
+import asyncio
 import logging
-from typing import Any, Dict, Iterable, List, Sequence
+import os
+from functools import lru_cache
+from typing import Any, Dict, List, Sequence
+from urllib.parse import quote_plus
 
 from django.conf import settings
 
 from langchain_openai import OpenAIEmbeddings
-from langchain_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
-from qdrant_client.http import models as qmodels
+from langchain_postgres import PGVector
 
 log = logging.getLogger(__name__)
 
-QDRANT_COLLECTION = getattr(settings, "QDRANT_COLLECTION", "listing_chunks")
+VECTOR_COLLECTION_NAME = getattr(settings, "VECTOR_COLLECTION_NAME", "property_embeddings")
 EMBEDDING_MODEL = getattr(settings, "EMBEDDING_MODEL", "text-embedding-3-small")
 EMBEDDING_DIMENSIONS = int(getattr(settings, "EMBEDDING_DIMENSIONS", 1536))
+VECTOR_INSERT_BATCH_SIZE = int(getattr(settings, "VECTOR_INSERT_BATCH_SIZE", 256))
 
 
 def get_embeddings_model() -> OpenAIEmbeddings:
@@ -23,42 +26,52 @@ def get_embeddings_model() -> OpenAIEmbeddings:
     )
 
 
-def get_qdrant_client() -> QdrantClient:
-    url = getattr(settings, "QDRANT_URL", None)
-    api_key = getattr(settings, "QDRANT_API_KEY", None)
+def _postgres_connection_url() -> str:
+    vector_db_url = os.getenv("VECTOR_DB_URL") or getattr(settings, "VECTOR_DB_URL", None)
+    if vector_db_url:
+        return vector_db_url
 
-    if url:
-        return QdrantClient(url=url, api_key=api_key, timeout=10.0)
+    db = settings.DATABASES["default"]
+    user = quote_plus(str(db.get("USER", "postgres")))
+    password = quote_plus(str(db.get("PASSWORD", "")))
+    host = db.get("HOST", "localhost")
+    port = db.get("PORT", "5432")
+    name = db.get("NAME", "postgres")
 
-    path = getattr(settings, "QDRANT_LOCAL_PATH", ":memory:")
-    return QdrantClient(path=path)
+    base_url = f"postgresql+psycopg://{user}:{password}@{host}:{port}/{name}"
+
+    options = db.get("OPTIONS") or {}
+    sslmode = options.get("sslmode")
+    if sslmode:
+        return f"{base_url}?sslmode={sslmode}"
+    return base_url
 
 
-def _ensure_collection(client: QdrantClient) -> None:
-    try:
-        exists = client.collection_exists(QDRANT_COLLECTION)
-    except Exception:
-        exists = False
-
-    if exists:
-        return
-
-    client.create_collection(
-        collection_name=QDRANT_COLLECTION,
-        vectors_config=qmodels.VectorParams(size=EMBEDDING_DIMENSIONS, distance=qmodels.Distance.COSINE),
+def _build_vectorstore(async_mode: bool = False) -> PGVector:
+    return PGVector(
+        embeddings=get_embeddings_model(),
+        collection_name=VECTOR_COLLECTION_NAME,
+        connection=_postgres_connection_url(),
+        embedding_length=EMBEDDING_DIMENSIONS,
+        use_jsonb=True,
+        async_mode=async_mode,
     )
 
 
-def get_qdrant_vectorstore() -> QdrantVectorStore:
-    client = get_qdrant_client()
-    _ensure_collection(client)
-    return QdrantVectorStore(
-        client=client,
-        collection_name=QDRANT_COLLECTION,
-        embedding=get_embeddings_model(),
-        content_payload_key="page_content",
-        metadata_payload_key="metadata",
-    )
+@lru_cache(maxsize=1)
+def get_vectorstore() -> PGVector:
+    vectorstore = _build_vectorstore(async_mode=False)
+    vectorstore.create_tables_if_not_exists()
+    return vectorstore
+
+
+async def get_vectorstore_async() -> PGVector:
+    vectorstore = _build_vectorstore(async_mode=True)
+    if hasattr(vectorstore, "acreate_tables_if_not_exists"):
+        await vectorstore.acreate_tables_if_not_exists()
+    else:
+        await asyncio.to_thread(vectorstore.create_tables_if_not_exists)
+    return vectorstore
 
 
 def _safe_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -77,14 +90,12 @@ def _safe_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return clean
 
 
-def upsert_listing_embeddings(records: Sequence[Dict[str, Any]]) -> None:
-    if not records:
-        return
+def _prepare_embedding_payload(records: Sequence[Dict[str, Any]]) -> tuple[List[str], List[List[float]], List[Dict[str, Any]], List[str]]:
+    texts: List[str] = []
+    embeddings: List[List[float]] = []
+    metadatas: List[Dict[str, Any]] = []
+    ids: List[str] = []
 
-    client = get_qdrant_client()
-    _ensure_collection(client)
-
-    points: List[qmodels.PointStruct] = []
     for row in records:
         vector = row.get("vector")
         listing_id = row.get("listing_chunk_id")
@@ -92,43 +103,67 @@ def upsert_listing_embeddings(records: Sequence[Dict[str, Any]]) -> None:
             continue
 
         metadata = _safe_metadata(row.get("metadata") or {})
-        payload = {
-            "page_content": row.get("text", ""),
-            "metadata": {
-                **metadata,
-                "listing_chunk_id": int(listing_id),
-            },
-            "listing_chunk_id": int(listing_id),
-            "transaction_type": metadata.get("transaction_type", "UNKNOWN"),
-            "property_type": metadata.get("property_type", "UNKNOWN"),
-        }
-        points.append(
-            qmodels.PointStruct(
-                id=int(listing_id),
-                vector=[float(x) for x in vector],
-                payload=payload,
-            )
-        )
+        metadata["listing_chunk_id"] = int(listing_id)
+        metadata.setdefault("transaction_type", metadata.get("transaction_type", "UNKNOWN"))
+        metadata.setdefault("property_type", metadata.get("property_type", "UNKNOWN"))
 
-    if not points:
+        texts.append(row.get("text", ""))
+        embeddings.append([float(x) for x in vector])
+        metadatas.append(metadata)
+        ids.append(str(listing_id))
+
+    return texts, embeddings, metadatas, ids
+
+
+def upsert_listing_embeddings(records: Sequence[Dict[str, Any]]) -> None:
+    if not records:
         return
 
-    client.upsert(collection_name=QDRANT_COLLECTION, points=points, wait=False)
-    log.info("Upserted %s vectors into qdrant collection=%s", len(points), QDRANT_COLLECTION)
+    vectorstore = get_vectorstore()
+    texts, embeddings, metadatas, ids = _prepare_embedding_payload(records)
+
+    if not ids:
+        return
+
+    for start in range(0, len(ids), VECTOR_INSERT_BATCH_SIZE):
+        end = start + VECTOR_INSERT_BATCH_SIZE
+        vectorstore.add_embeddings(
+            texts=texts[start:end],
+            embeddings=embeddings[start:end],
+            metadatas=metadatas[start:end],
+            ids=ids[start:end],
+        )
+
+    log.info("Upserted %s vectors into pgvector collection=%s", len(ids), VECTOR_COLLECTION_NAME)
 
 
-def build_qdrant_filter(filters: Dict[str, Any]) -> qmodels.Filter | None:
-    conditions: List[qmodels.FieldCondition] = []
+async def aupsert_listing_embeddings(records: Sequence[Dict[str, Any]]) -> None:
+    if not records:
+        return
+
+    vectorstore = await get_vectorstore_async()
+    texts, embeddings, metadatas, ids = _prepare_embedding_payload(records)
+
+    if not ids:
+        return
+
+    if hasattr(vectorstore, "aadd_embeddings"):
+        for start in range(0, len(ids), VECTOR_INSERT_BATCH_SIZE):
+            end = start + VECTOR_INSERT_BATCH_SIZE
+            await vectorstore.aadd_embeddings(
+                texts=texts[start:end],
+                embeddings=embeddings[start:end],
+                metadatas=metadatas[start:end],
+                ids=ids[start:end],
+            )
+    else:
+        await asyncio.to_thread(upsert_listing_embeddings, records)
+
+
+def build_pg_filter(filters: Dict[str, Any]) -> Dict[str, Any]:
+    pg_filter: Dict[str, Any] = {}
     for key, value in (filters or {}).items():
         if value in (None, ""):
             continue
-        conditions.append(
-            qmodels.FieldCondition(
-                key=key,
-                match=qmodels.MatchValue(value=value),
-            )
-        )
-
-    if not conditions:
-        return None
-    return qmodels.Filter(must=conditions)
+        pg_filter[key] = {"$eq": value}
+    return pg_filter

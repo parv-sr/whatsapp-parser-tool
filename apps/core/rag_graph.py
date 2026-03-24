@@ -1,4 +1,6 @@
+import asyncio
 import json
+import hashlib
 import logging
 import re
 from collections import defaultdict
@@ -6,12 +8,13 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from django.conf import settings
 from django.db import connection
+from django.core.cache import cache
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
-from apps.embeddings.vector_store import build_qdrant_filter, get_qdrant_vectorstore
+from apps.embeddings.vector_store import build_pg_filter, get_vectorstore, get_vectorstore_async
 from apps.preprocessing.models import ListingChunk
 
 log = logging.getLogger(__name__)
@@ -26,6 +29,21 @@ LEASE_TERMS = {"lease", "leave and license", "l&l", "license"}
 RENT_TERMS = {"rent", "rental", "tenant", "let out"}
 CHAT_MODEL = getattr(settings, "CHAT_MODEL", "gpt-4o-mini")
 ALLOWED_CHAT_MODELS = getattr(settings, "OPENAI_CHAT_MODELS", ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"])
+
+
+def _cache_key(prefix: str, payload: Any) -> str:
+    encoded = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return f"rag:{prefix}:{digest}"
+
+
+async def _aget_or_set_cache(cache_key: str, ttl_seconds: int, compute_fn):
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    value = await compute_fn()
+    cache.set(cache_key, value, timeout=ttl_seconds)
+    return value
 
 
 class RAGState(TypedDict, total=False):
@@ -148,9 +166,9 @@ def _is_gibberish(query: str) -> bool:
 
 
 def _fetch_top_k_by_vector(query: str, filters: Dict[str, Any], top_k: int) -> List[Dict[str, Any]]:
-    vectorstore = get_qdrant_vectorstore()
-    qdrant_filter = build_qdrant_filter(filters)
-    docs = vectorstore.similarity_search_with_score(query=query, k=top_k, filter=qdrant_filter)
+    vectorstore = get_vectorstore()
+    pg_filter = build_pg_filter(filters)
+    docs = vectorstore.similarity_search_with_score(query=query, k=top_k, filter=pg_filter or None)
 
     results: List[Dict[str, Any]] = []
     for doc, score in docs:
@@ -168,6 +186,43 @@ def _fetch_top_k_by_vector(query: str, filters: Dict[str, Any], top_k: int) -> L
         )
     return results
 
+
+
+
+async def _afetch_top_k_by_vector(query: str, filters: Dict[str, Any], top_k: int) -> List[Dict[str, Any]]:
+    cache_key = _cache_key("vec", {"q": query, "filters": filters, "k": top_k})
+
+    async def _compute() -> List[Dict[str, Any]]:
+        vectorstore = await get_vectorstore_async()
+        pg_filter = build_pg_filter(filters)
+
+        if hasattr(vectorstore, "asimilarity_search_with_score"):
+            docs = await vectorstore.asimilarity_search_with_score(query=query, k=top_k, filter=pg_filter or None)
+        else:
+            docs = await asyncio.to_thread(
+                vectorstore.similarity_search_with_score,
+                query,
+                top_k,
+                pg_filter or None,
+            )
+
+        results: List[Dict[str, Any]] = []
+        for doc, score in docs:
+            meta = doc.metadata or {}
+            listing_id = meta.get("listing_chunk_id")
+            if listing_id is None:
+                listing_id = (meta.get("metadata") or {}).get("listing_chunk_id")
+            if listing_id is None:
+                continue
+            results.append(
+                {
+                    "listing_chunk_id": int(listing_id),
+                    "distance": float(score) if score is not None else None,
+                }
+            )
+        return results
+
+    return await _aget_or_set_cache(cache_key, 120, _compute)
 
 def _fetch_top_k_by_keyword(query: str, top_k: int) -> List[Dict[str, Any]]:
     terms = [t for t in re.split(r"\W+", query.lower()) if len(t) > 2]
@@ -317,38 +372,69 @@ def _route_after_retrieve(state: RAGState) -> str:
     return "reject" if state.get("reject") else "respond"
 
 
-def _retrieve_node(state: RAGState) -> RAGState:
+async def _hybrid_retrieve_async(query: str, top_k: int) -> List[Dict[str, Any]]:
+    cache_key = _cache_key("hybrid", {"q": query, "k": top_k})
+
+    async def _compute() -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(_hybrid_retrieve, query, top_k)
+
+    return await _aget_or_set_cache(cache_key, 90, _compute)
+
+
+async def _load_contexts_async(nearest: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    cache_key = _cache_key("ctx", nearest)
+
+    async def _compute() -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(_load_contexts, nearest)
+
+    return await _aget_or_set_cache(cache_key, 90, _compute)
+
+
+async def _retrieve_node(state: RAGState) -> RAGState:
     query = state.get("query", "")
     top_k = max(1, min(30, int(state.get("top_k") or DEFAULT_TOP_K)))
-    nearest = _hybrid_retrieve(query, top_k=top_k)
-    contexts = _load_contexts(nearest)
+    nearest = await _hybrid_retrieve_async(query, top_k=top_k)
+    contexts = await _load_contexts_async(nearest)
     reject = _is_gibberish(query) or (not contexts and not _is_domain_query(query))
     return {"nearest": nearest, "contexts": contexts, "reject": reject}
 
 
-def _reject_node(_: RAGState) -> RAGState:
-    return {"answer": _reject_text()}
+async def _reject_node(_: RAGState) -> RAGState:
+    cache_key = _cache_key("reject", "static")
+
+    async def _compute() -> RAGState:
+        return {"answer": _reject_text()}
+
+    return await _aget_or_set_cache(cache_key, 3600, _compute)
 
 
-def _respond_node(state: RAGState) -> RAGState:
+async def _respond_node(state: RAGState) -> RAGState:
     model = state.get("model") if state.get("model") in ALLOWED_CHAT_MODELS else CHAT_MODEL
     temperature = float(state.get("temperature", 0.0))
     query = state.get("query", "")
     contexts = state.get("contexts", [])
     memory = state.get("memory", "")
 
-    messages = _build_messages(query, contexts, memory=memory)
-    llm = ChatOpenAI(
-        model=model,
-        api_key=getattr(settings, "OPENAI_API_KEY", None),
-        temperature=temperature,
-        max_tokens=900,
+    cache_key = _cache_key(
+        "resp",
+        {"model": model, "temperature": temperature, "query": query, "contexts": contexts, "memory": memory},
     )
-    response = llm.invoke(messages)
-    answer = (response.content or "").strip() if response else ""
-    if not answer:
-        answer = "I couldn't find enough listing evidence to answer that reliably."
-    return {"answer": answer, "messages": messages, "model": model}
+
+    async def _compute() -> RAGState:
+        messages = _build_messages(query, contexts, memory=memory)
+        llm = ChatOpenAI(
+            model=model,
+            api_key=getattr(settings, "OPENAI_API_KEY", None),
+            temperature=temperature,
+            max_tokens=900,
+        )
+        response = await llm.ainvoke(messages)
+        answer = (response.content or "").strip() if response else ""
+        if not answer:
+            answer = "I couldn't find enough listing evidence to answer that reliably."
+        return {"answer": answer, "messages": messages, "model": model}
+
+    return await _aget_or_set_cache(cache_key, 60, _compute)
 
 
 def build_rag_graph():
@@ -366,7 +452,7 @@ def build_rag_graph():
 RAG_WORKFLOW = build_rag_graph()
 
 
-def run_rag(query: str, top_k: int = DEFAULT_TOP_K, model: str = CHAT_MODEL, temperature: float = 0.0, memory: str = "") -> RAGState:
+async def run_rag(query: str, top_k: int = DEFAULT_TOP_K, model: str = CHAT_MODEL, temperature: float = 0.0, memory: str = "") -> RAGState:
     state: RAGState = {
         "query": query,
         "top_k": top_k,
@@ -374,7 +460,7 @@ def run_rag(query: str, top_k: int = DEFAULT_TOP_K, model: str = CHAT_MODEL, tem
         "temperature": temperature,
         "memory": memory,
     }
-    return RAG_WORKFLOW.invoke(state)
+    return await RAG_WORKFLOW.ainvoke(state)
 
 
 def stream_llm_from_state(state: RAGState):
