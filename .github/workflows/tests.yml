@@ -11,19 +11,19 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-        postgres:
-            image: ankane/pgvector:latest
-            env:
-                POSTGRES_USER: postgres
-                POSTGRES_PASSWORD: mypassword
-                POSTGRES_DB: mydb
-            ports:
-                - 5432:5432
-            options: >-
-                --health-cmd pg_isready
-                --health-interval 10s
-                --health-timeout 5s
-                --health-retries 5
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: admin@2025
+          POSTGRES_DB: whatsapp-parser-tool-db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
     - uses: actions/checkout@v4
@@ -43,6 +43,10 @@ jobs:
         SECRET_KEY: 'dummy-key-for-tests'
         DEBUG: 'True'
         OPENAI_API_KEY: 'dummy-test-key-so-that-django-can-boot'
-        DATABASE_URL: 'postgres://postgres:mypassword@localhost:5432/mydb'
+        DB_USER: postgres
+        DB_PASS: admin@2025
+        DB_HOST: localhost
+        DB_PORT: 5432
+        DB_NAME: whatsapp-parser-tool-db
       run: |
         python manage.py test
