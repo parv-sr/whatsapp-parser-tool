@@ -17,7 +17,10 @@ log = logging.getLogger(__name__)
 client = AsyncOpenAI(api_key=getattr(settings, "OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY")))
 
 # Token encoder for GPT-4o-mini (cl100k_base)
-ENCODING = tiktoken.get_encoding("cl100k_base")
+try:
+    ENCODING = tiktoken.get_encoding("cl100k_base")
+except Exception:
+    ENCODING = None
 
 # --- CONFIGURATION ---
 # We pack ~15 messages per API call for maximum speed and efficiency.
