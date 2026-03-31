@@ -271,5 +271,4 @@ if 'test' in sys.argv:
     MIGRATION_MODULES = {
         app.split('.')[-1]: None for app in INSTALLED_APPS
     }
-
     DATABASES['default']['CONN_MAX_AGE'] = 0

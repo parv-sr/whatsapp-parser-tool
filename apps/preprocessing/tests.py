@@ -80,8 +80,8 @@ class ExtractorAndPipelineIntegrationTests(TestCase):
             file_name="chunk.txt",
             content="x",
         )
-        c1 = RawMessageChunk.objects.create(rawfile=raw_file, sender="Sender A", raw_text="msg one")
-        c2 = RawMessageChunk.objects.create(rawfile=raw_file, sender="Sender B", raw_text="msg two")
+        c1 = RawMessageChunk.objects.create(rawfile=raw_file, sender="Sender A", raw_text="Available 2 bhk for sale in Bandra West")
+        c2 = RawMessageChunk.objects.create(rawfile=raw_file, sender="Sender B", raw_text="Need office on lease in Lower Parel")
 
         fake_results = [
             BatchItemResult(
