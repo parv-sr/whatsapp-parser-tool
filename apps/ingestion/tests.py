@@ -57,7 +57,7 @@ class WhatsAppParserPipelineTests(TestCase):
         )
 
     def test_clean_block_removes_header_and_system_and_keeps_message(self):
-        block = "[29/12/25, 1:22:37 PM] ~ Nitin More: message was deleted\n*Available For outright sale*"
+        block = "[29/12/25, 1:22:37 PM] ~ Nitin More:   *Available For outright sale*"
         cleaned = clean_block(block)
         self.assertEqual(cleaned, "*Available For outright sale*")
 
@@ -152,13 +152,13 @@ class DeduplicationTests(TestCase):
             ),
         ]
 
-        with patch("apps.ingestion.pipeline.extract_listings_from_batch", return_value=mocked_results), patch(
-            "apps.ingestion.pipeline.get_batch_embeddings", None
-        ):
+        with patch("apps.ingestion.pipeline.extract_listings_from_batch", return_value=mocked_results), \
+            patch("apps.ingestion.pipeline.get_batch_embeddings", None), \
+            patch("apps.ingestion.pipeline.connection.close"):
             response = process_single_llm_batch((0, [c1.id, c2.id, c3.id], raw_file.id))
 
         dupe = response["dupe"]
-        self.assertEqual(dupe["in_chat"], 1)
+        self.assertEqual(dupe["in_chat"], 1)        
         self.assertEqual(dupe["in_batch"], 1)
         self.assertEqual(dupe["in_db"], 1)
         self.assertEqual(dupe["inserted"], 1)

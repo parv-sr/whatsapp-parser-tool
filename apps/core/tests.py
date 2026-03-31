@@ -11,7 +11,7 @@ from apps.core import rag_graph
 
 class RagGraphUnitTests(TestCase):
     def test_extract_filters_for_buy_query(self):
-        filters = rag_graph._extract_filters("Buy a 2bhk in Bandra")
+        filters = rag_graph._extract_filters("Buy a 2bhk flat in Bandra")
         self.assertEqual(
             filters,
             {

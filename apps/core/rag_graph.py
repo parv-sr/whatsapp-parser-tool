@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 from django.conf import settings
 from django.db import connection
 from django.core.cache import cache
+from asgiref.sync import sync_to_async
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -38,11 +39,11 @@ def _cache_key(prefix: str, payload: Any) -> str:
 
 
 async def _aget_or_set_cache(cache_key: str, ttl_seconds: int, compute_fn):
-    cached = cache.get(cache_key)
+    cached = await sync_to_async(cache.get(cache_key))
     if cached is not None:
         return cached
     value = await compute_fn()
-    cache.set(cache_key, value, timeout=ttl_seconds)
+    await sync_to_async(cache.set(cache_key, value, timeout=ttl_seconds))
     return value
 
 
