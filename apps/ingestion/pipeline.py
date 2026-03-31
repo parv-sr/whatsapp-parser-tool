@@ -7,10 +7,9 @@ import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 import multiprocessing
-import threading
 
 from django.utils import timezone
-from django.db import transaction, close_old_connections, connections
+from django.db import transaction
 from django.core.cache import cache
 
 # Models
@@ -160,10 +159,6 @@ def process_single_llm_batch(batch_data):
     THREAD WORKER: Processes a batch of message chunks.
     CRITICAL: Manages DB connections explicitly to prevent deadlocks.
     """
-    manage_connections = threading.current_thread() is not threading.main_thread()
-    if manage_connections:
-        close_old_connections()
-
     batch_idx, chunk_ids, raw_file_id = batch_data
 
     try:
@@ -304,10 +299,6 @@ def process_single_llm_batch(batch_data):
         log.error("Thread worker failed: %s", e)
         RawMessageChunk.objects.filter(id__in=chunk_ids).update(status="ERROR")
         return {"chunk_count": 0, "dupe": DupeTracker().as_dict()}
-    finally:
-        if manage_connections:
-            close_old_connections()
-            connections.close_all()
 
 
 def _process_file_in_background_sync(raw_file_id: int):
