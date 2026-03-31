@@ -11,9 +11,49 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.AlterField(
-            model_name='embeddingrecord',
-            name='embedding_vector',
-            field=pgvector.django.vector.VectorField(blank=True, db_column='embedding_vector_v', dimensions=1536, null=True),
+         migrations.RunSQL(
+            """
+            -- Ensure canonical pgvector column exists with the final name.
+            ALTER TABLE preprocessing_embeddingrecord
+            ADD COLUMN IF NOT EXISTS embedding_vector vector(1536);
+
+            -- Migrate data from the temporary column if present.
+            UPDATE preprocessing_embeddingrecord
+            SET embedding_vector = embedding_vector_v
+            WHERE embedding_vector IS NULL
+              AND embedding_vector_v IS NOT NULL;
+
+            -- Remove temporary column used by earlier migrations.
+            ALTER TABLE preprocessing_embeddingrecord
+            DROP COLUMN IF EXISTS embedding_vector_v;
+
+            -- Recreate ANN index on canonical column.
+            DROP INDEX IF EXISTS idx_embeddingrecord_hnsw;
+            CREATE INDEX IF NOT EXISTS idx_embeddingrecord_hnsw
+            ON preprocessing_embeddingrecord
+            USING hnsw (embedding_vector vector_cosine_ops)
+            WITH (m = 16, ef_construction = 200);
+            """,
+            reverse_sql="""
+            DROP INDEX IF EXISTS idx_embeddingrecord_hnsw;
+            ALTER TABLE preprocessing_embeddingrecord
+            ADD COLUMN IF NOT EXISTS embedding_vector_v vector(1536);
+            UPDATE preprocessing_embeddingrecord
+            SET embedding_vector_v = embedding_vector
+            WHERE embedding_vector_v IS NULL
+              AND embedding_vector IS NOT NULL;
+            ALTER TABLE preprocessing_embeddingrecord
+            DROP COLUMN IF EXISTS embedding_vector;
+            """,
+        ),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[],
+            state_operations=[
+                migrations.AlterField(
+                    model_name='embeddingrecord',
+                    name='embedding_vector',
+                    field=pgvector.django.vector.VectorField(blank=True, dimensions=1536, null=True),
+                ),
+            ],
         ),
     ]
