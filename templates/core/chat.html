@@ -3,6 +3,10 @@
 
 {% block content %}
 <style>
+    :root {
+        --accent: #00d4aa;
+    }
+
     main {
         padding-bottom: 7rem;
     }
@@ -28,6 +32,7 @@
         overflow-y: auto;
         padding: 0.5rem 0.25rem 7.5rem;
         scrollbar-width: thin;
+        scrollbar-color: rgba(0, 212, 170, 0.32) rgba(30, 41, 59, 0.35);
     }
 
     .msg {
@@ -93,87 +98,112 @@
     #chat-input-bar {
         position: fixed;
         left: 50%;
-        bottom: 14px;
+        bottom: 12px;
         transform: translateX(-50%);
         width: min(1020px, 96%);
         z-index: 80;
     }
 
     #chat-form {
-        display: grid;
-        grid-template-columns: 210px 1fr auto auto;
-        gap: 0.65rem;
+        display: flex;
         align-items: center;
-        padding: 0.7rem;
-        border: 1px solid rgba(99, 179, 237, 0.24);
-        border-radius: 18px;
-        background: linear-gradient(145deg, rgba(12, 18, 32, 0.95), rgba(15, 26, 48, 0.94));
-        backdrop-filter: blur(14px);
-        box-shadow: 0 16px 42px rgba(2, 8, 23, 0.52), inset 0 1px 0 rgba(148, 163, 184, 0.12);
+        gap: 0.3rem;
+        padding: 0.42rem;
+        border-radius: 999px;
+        border: 1px solid rgba(0, 212, 170, 0.28);
+        background: linear-gradient(160deg, rgba(7, 14, 27, 0.95), rgba(12, 22, 40, 0.97));
+        backdrop-filter: blur(16px);
+        box-shadow:
+            0 20px 40px rgba(2, 6, 23, 0.58),
+            inset 0 1px 0 rgba(148, 163, 184, 0.16),
+            inset 0 0 0 1px rgba(0, 212, 170, 0.08);
     }
 
     .control,
     #chat-input {
-        height: 48px;
+        height: 50px;
         margin: 0;
-        border-radius: 13px;
+        border-radius: 999px;
         font-size: 0.95rem;
-        padding: 0 0.95rem;
-        border: 1px solid rgba(148, 163, 184, 0.26);
-        background: rgba(12, 19, 33, 0.92);
-        color: #e6edf8;
+        border: 0;
+        outline: none;
+        box-shadow: none;
+        background: transparent;
+        color: #dbe7f5;
     }
 
     .control:focus,
     #chat-input:focus {
         outline: none;
-        border-color: rgba(56, 189, 248, 0.9);
-        box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.23);
+        box-shadow: none;
     }
 
     #model-select {
         appearance: none;
-        background-image:
-            linear-gradient(45deg, transparent 50%, #7dd3fc 50%),
-            linear-gradient(135deg, #7dd3fc 50%, transparent 50%);
-        background-position:
-            calc(100% - 18px) calc(50% - 3px),
-            calc(100% - 12px) calc(50% - 3px);
-        background-size: 6px 6px, 6px 6px;
-        background-repeat: no-repeat;
+        flex: 0 0 192px;
+        padding: 0 2.3rem 0 1rem;
         font-weight: 600;
         letter-spacing: 0.01em;
+        color: #d8ebff;
+        background-color: rgba(17, 29, 49, 0.78);
+        background-image:
+            linear-gradient(45deg, transparent 50%, var(--accent) 50%),
+            linear-gradient(135deg, var(--accent) 50%, transparent 50%),
+            linear-gradient(160deg, rgba(15, 23, 42, 0.85), rgba(30, 41, 59, 0.7));
+        background-position:
+            calc(100% - 18px) calc(50% - 4px),
+            calc(100% - 12px) calc(50% - 4px),
+            center;
+        background-size: 7px 7px, 7px 7px, 100% 100%;
+        background-repeat: no-repeat;
+    }
+
+    #model-select option {
+        background: #0f172a;
+        color: #dbeafe;
+    }
+
+    #chat-input {
+        flex: 1;
+        min-width: 0;
+        padding: 0 0.9rem;
+        color: #e2ebf8;
     }
 
     #chat-input::placeholder {
-        color: rgba(191, 203, 219, 0.92);
+        color: rgba(191, 203, 219, 0.78);
     }
 
     #chat-status {
-        font-size: 0.8rem;
-        color: #9bb2ce;
-        min-width: 116px;
-        text-align: right;
+        flex: 0 0 auto;
+        font-size: 0.76rem;
+        color: #b8d8d5;
+        padding: 0.28rem 0.72rem;
+        border-radius: 999px;
+        background: rgba(11, 28, 43, 0.72);
+        border: 1px solid rgba(0, 212, 170, 0.22);
         font-weight: 500;
+        text-align: center;
     }
 
     .send-btn {
-        width: 48px;
-        height: 48px;
+        width: 50px;
+        height: 50px;
+        flex: 0 0 50px;
         margin: 0;
         border-radius: 999px;
         border: none;
-        background: linear-gradient(145deg, #0ea5e9, #2563eb 58%, #1d4ed8);
+        background: linear-gradient(145deg, var(--accent), #06b6d4);
         display: grid;
         place-items: center;
         cursor: pointer;
-        box-shadow: 0 10px 20px rgba(37, 99, 235, 0.4);
+        box-shadow: 0 8px 18px rgba(0, 212, 170, 0.33);
         transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
     }
 
     .send-btn:hover {
         transform: translateY(-1px) scale(1.01);
-        box-shadow: 0 12px 24px rgba(14, 165, 233, 0.42);
+        box-shadow: 0 12px 26px rgba(0, 212, 170, 0.4);
         filter: brightness(1.05);
     }
 
@@ -183,56 +213,180 @@
         fill: white;
     }
 
-    .source-btn {
-        margin: 0;
-        padding: 0.38rem 0.8rem;
-        border-radius: 999px;
-        font-size: 0.77rem;
-        font-weight: 650;
-        border: 1px solid rgba(56, 189, 248, 0.82);
-        background: linear-gradient(145deg, rgba(14, 165, 233, 0.3), rgba(2, 132, 199, 0.22));
-        color: #cff5ff;
-        cursor: pointer;
-        transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
-    }
-
-    .source-btn:hover {
-        transform: translateY(-1px);
-        background: linear-gradient(145deg, rgba(56, 189, 248, 0.42), rgba(14, 116, 144, 0.28));
-        box-shadow: 0 8px 16px rgba(14, 165, 233, 0.3);
-    }
-
     dialog::backdrop {
         background: rgba(2, 6, 23, 0.75);
     }
 
-    dialog article {
-        width: min(760px, 96vw);
-        max-height: 82vh;
+    .modal-modern {
+        width: min(860px, 96vw);
+        max-height: 86vh;
+        display: flex;
+        flex-direction: column;
         overflow: hidden;
-        background: linear-gradient(160deg, rgba(12, 18, 32, 0.98), rgba(17, 28, 47, 0.97)) !important;
-        border: 1px solid rgba(125, 211, 252, 0.32);
-        border-radius: 18px;
-        box-shadow: 0 24px 45px rgba(2, 6, 23, 0.62);
+        background: linear-gradient(165deg, rgba(10, 19, 34, 0.98), rgba(15, 29, 50, 0.98)) !important;
+        border: 1px solid rgba(0, 212, 170, 0.32);
+        border-radius: 22px;
+        box-shadow: 0 28px 48px rgba(2, 6, 23, 0.65);
+        padding: 1rem;
     }
 
-    dialog header h3 {
+    .modal-modern header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.8rem;
+        padding-bottom: 0.6rem;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+        margin-bottom: 0.78rem;
+    }
+
+    .modal-modern h3 {
         margin: 0;
-        color: #e9f4ff;
+        color: #e5f8ff;
+        font-size: 1.08rem;
+        font-weight: 650;
         letter-spacing: 0.01em;
     }
 
+    .modal-meta {
+        margin: 0 0 0.88rem;
+        padding: 0.62rem 0.78rem;
+        border-radius: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        background: rgba(9, 18, 34, 0.66);
+        color: #9cb3cb;
+        font-size: 0.88rem;
+        line-height: 1.45;
+    }
+
+    .modal-meta strong {
+        color: #e6f2ff;
+        font-weight: 600;
+    }
+
+    .modal-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+    }
+
+    .modal-btn {
+        border: 1px solid rgba(0, 212, 170, 0.34);
+        background: linear-gradient(155deg, rgba(15, 36, 54, 0.92), rgba(6, 25, 37, 0.92));
+        color: #d5fffa;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        padding: 0.45rem 0.92rem;
+        margin: 0;
+        line-height: 1;
+        cursor: pointer;
+        transition: transform 0.14s ease, box-shadow 0.14s ease, filter 0.14s ease;
+    }
+
+    .modal-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 9px 16px rgba(0, 212, 170, 0.25);
+        filter: brightness(1.06);
+    }
+
+    .modal-btn-copy {
+        background: linear-gradient(145deg, rgba(0, 212, 170, 0.26), rgba(6, 182, 212, 0.24));
+        border-color: rgba(0, 212, 170, 0.62);
+    }
+
+    .modal-btn-close {
+        width: 40px;
+        height: 40px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        font-size: 1.16rem;
+        color: #c5d3e8;
+    }
+
+    .modal-copy-status {
+        min-height: 1.15rem;
+        margin: 0 0 0.45rem;
+        color: #7debcf;
+        font-size: 0.78rem;
+        font-weight: 600;
+        opacity: 0;
+        transform: translateY(-2px);
+        transition: opacity 0.18s ease, transform 0.18s ease;
+        pointer-events: none;
+    }
+
+    .modal-copy-status.visible {
+        opacity: 1;
+        transform: translateY(0);
+    }
+
     .raw-msg-box {
+        min-height: 200px;
         max-height: 56vh;
         overflow-y: auto;
-        padding: 0.95rem;
-        border-radius: 12px;
-        background: rgba(4, 10, 22, 0.72);
-        border: 1px solid rgba(71, 85, 105, 0.45);
-        color: #d8e3f3;
+        margin: 0;
+        padding: 1rem 1.05rem;
+        border-radius: 14px;
+        background: rgba(3, 10, 22, 0.76);
+        border: 1px solid rgba(71, 85, 105, 0.38);
+        color: #dbe7f4;
         font-size: 0.86rem;
-        line-height: 1.5;
+        font-family: "JetBrains Mono", "Fira Code", "Consolas", "Menlo", monospace;
+        line-height: 1.6;
+        letter-spacing: 0.005em;
         white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    .source-btn {
+        margin: 0;
+        padding: 0.38rem 0.82rem;
+        border-radius: 999px;
+        font-size: 0.77rem;
+        font-weight: 650;
+        border: 1px solid rgba(0, 212, 170, 0.72);
+        background: linear-gradient(145deg, rgba(0, 212, 170, 0.24), rgba(8, 145, 178, 0.2));
+        color: #c7fff0;
+        cursor: pointer;
+        transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+    }
+
+    .source-btn:hover {
+        transform: translateY(-1px);
+        background: linear-gradient(145deg, rgba(0, 212, 170, 0.35), rgba(6, 182, 212, 0.24));
+        box-shadow: 0 8px 16px rgba(0, 212, 170, 0.24);
+    }
+
+    * {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(0, 212, 170, 0.35) rgba(15, 23, 42, 0.45);
+    }
+
+    *::-webkit-scrollbar {
+        width: 9px;
+        height: 9px;
+    }
+
+    *::-webkit-scrollbar-track {
+        background: rgba(15, 23, 42, 0.45);
+        border-radius: 999px;
+    }
+
+    *::-webkit-scrollbar-thumb {
+        border-radius: 999px;
+        border: 2px solid rgba(15, 23, 42, 0.45);
+        background: linear-gradient(180deg, rgba(0, 212, 170, 0.55), rgba(6, 182, 212, 0.35));
+    }
+
+    *::-webkit-scrollbar-thumb:hover {
+        background: linear-gradient(180deg, rgba(0, 212, 170, 0.72), rgba(6, 182, 212, 0.48));
     }
 
     @media (max-width: 760px) {
@@ -244,17 +398,47 @@
             padding-bottom: 8.2rem;
         }
 
+        #chat-input-bar {
+            bottom: 8px;
+        }
+
         #chat-form {
-            grid-template-columns: 1fr auto;
+            border-radius: 22px;
+            flex-wrap: wrap;
+            gap: 0.36rem;
+            padding: 0.46rem;
         }
 
-        #model-select,
-        #chat-status {
-            grid-column: 1 / -1;
+        #model-select {
+            flex: 1 1 100%;
+        }
+
+        #chat-input {
+            flex: 1 1 calc(100% - 60px);
+            order: 2;
         }
 
         #chat-status {
-            text-align: left;
+            order: 3;
+            font-size: 0.72rem;
+            padding: 0.24rem 0.62rem;
+        }
+
+        .send-btn {
+            order: 4;
+            width: 46px;
+            height: 46px;
+            flex-basis: 46px;
+        }
+
+        .modal-modern {
+            width: 98vw;
+            max-height: 88vh;
+            padding: 0.78rem;
+        }
+
+        .modal-meta {
+            font-size: 0.82rem;
         }
     }
 </style>
@@ -277,12 +461,16 @@
 </div>
 
 <dialog id="source-modal">
-    <article>
+    <article class="modal-modern">
         <header>
-            <button aria-label="Close" rel="prev" onclick="closeSourceModal()"></button>
             <h3>Original Message</h3>
+            <div class="modal-actions">
+                <button type="button" class="modal-btn modal-btn-copy" onclick="copyModalContent()">Copy Text</button>
+                <button type="button" class="modal-btn modal-btn-close" aria-label="Close" onclick="closeSourceModal()">✕</button>
+            </div>
         </header>
-        <p style="font-size:0.9rem;color:#94a3b8;margin-bottom:.5rem;">Sender: <span id="modal-sender" style="color:white"></span> | Time: <span id="modal-time" style="color:white"></span></p>
+        <p class="modal-meta">Sender: <strong id="modal-sender"></strong> · Time: <strong id="modal-time"></strong></p>
+        <p id="modal-copy-status" class="modal-copy-status" role="status" aria-live="polite"></p>
         <pre id="modal-content" class="raw-msg-box">Loading...</pre>
     </article>
 </dialog>
@@ -297,6 +485,9 @@
     const modelSelect = document.getElementById("model-select");
     const chatStatus = document.getElementById("chat-status");
     const modal = document.getElementById("source-modal");
+    const modalContent = document.getElementById("modal-content");
+    const modalCopyStatus = document.getElementById("modal-copy-status");
+    let copyToastTimer = null;
 
     function closeSourceModal() {
         if (modal.open) modal.close();
@@ -308,16 +499,42 @@
         } else {
             modal.setAttribute("open", true);
         }
-        document.getElementById("modal-content").textContent = "Loading original message...";
+        modalCopyStatus.classList.remove("visible");
+        modalCopyStatus.textContent = "";
+        modalContent.textContent = "Loading original message...";
         try {
             const res = await fetch(`/core/chat/source/${listingId}/`);
             if (!res.ok) throw new Error("Fetch failed");
             const data = await res.json();
-            document.getElementById("modal-content").textContent = data.raw_text || "N/A";
+            modalContent.textContent = data.raw_text || "N/A";
             document.getElementById("modal-sender").textContent = data.sender || "Unknown";
             document.getElementById("modal-time").textContent = data.timestamp || "N/A";
         } catch {
-            document.getElementById("modal-content").textContent = "Error loading source message.";
+            modalContent.textContent = "Error loading source message.";
+        }
+    }
+
+    function showCopyToast(message, isError = false) {
+        if (copyToastTimer) clearTimeout(copyToastTimer);
+        modalCopyStatus.textContent = message;
+        modalCopyStatus.style.color = isError ? "#fda4af" : "#7debcf";
+        modalCopyStatus.classList.add("visible");
+        copyToastTimer = setTimeout(() => {
+            modalCopyStatus.classList.remove("visible");
+        }, 1800);
+    }
+
+    async function copyModalContent() {
+        const text = modalContent.textContent || "";
+        if (!text.trim()) {
+            showCopyToast("Nothing to copy yet.", true);
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(text);
+            showCopyToast("Copied original message.");
+        } catch {
+            showCopyToast("Copy failed. Please copy manually.", true);
         }
     }
 
@@ -337,7 +554,7 @@
                 target.innerHTML = "";
                 const btn = document.createElement("button");
                 btn.className = "source-btn";
-                btn.textContent = "Open Source";
+                btn.innerHTML = '<span aria-hidden="true">👁</span> View Original';
                 btn.onclick = () => openSourceModal(idVal);
                 target.appendChild(btn);
             });
