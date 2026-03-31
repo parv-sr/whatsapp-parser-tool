@@ -268,9 +268,12 @@ else:
     SECURE_HSTS_PRELOAD = True
 
 
-# Disable migrations during tests to avoid historical conflicts
+import sys
+
 if 'test' in sys.argv:
+    # Skip migrations
     MIGRATION_MODULES = {
-        app.split('.')[-1]: None for app in INSTALLED_APPS
+        app.split('.')[-1]: None 
+        for app in INSTALLED_APPS 
+        if app.split('.')[-1] != 'pgvector'
     }
-    DATABASES['default']['CONN_MAX_AGE'] = 0
