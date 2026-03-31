@@ -39,11 +39,11 @@ def _cache_key(prefix: str, payload: Any) -> str:
 
 
 async def _aget_or_set_cache(cache_key: str, ttl_seconds: int, compute_fn):
-    cached = await sync_to_async(cache.get(cache_key))
+    cached = await sync_to_async(cache.get)(cache_key)
     if cached is not None:
         return cached
     value = await compute_fn()
-    await sync_to_async(cache.set(cache_key, value, timeout=ttl_seconds))
+    await sync_to_async(cache.set)(cache_key, value, timeout=ttl_seconds)
     return value
 
 
