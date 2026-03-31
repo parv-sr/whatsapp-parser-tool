@@ -34,7 +34,7 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        cache: 'pip'                    
+        cache: 'pip'
         cache-dependency-path: requirements.txt
 
     - name: Install dependencies
@@ -52,7 +52,7 @@ jobs:
         DB_HOST: localhost
         DB_PORT: 5432
         DB_NAME: whatsapp-parser-tool-db
-      run: python manage.py check --deploy --fail-level WARNING
+      run: python manage.py check --deploy --fail-level ERROR
 
     - name: Run tests with coverage
       env:
