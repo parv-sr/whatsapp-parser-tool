@@ -270,10 +270,11 @@ else:
 
 import sys
 
-if 'test' in sys.argv:
+if os.getenv("SKIP_MIGRATIONS", "False") == "True":
     # Skip migrations
     MIGRATION_MODULES = {
         app.split('.')[-1]: None 
         for app in INSTALLED_APPS 
         if app.split('.')[-1] != 'pgvector'
     }
+
