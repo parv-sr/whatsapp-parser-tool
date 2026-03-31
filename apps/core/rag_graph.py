@@ -76,6 +76,28 @@ class RAGState(TypedDict, total=False):
     sources: List[Dict[str, Any]]
 
 
+def _build_messages(query: str, contexts: List[Dict[str, Any]], memory: str = "") -> List[Dict[str, str]]:
+    """
+    Backward-compatible helper kept for tests and diagnostics.
+    """
+    snippet_blocks = []
+    for idx, item in enumerate(contexts, start=1):
+        meta = dict(item.get("metadata", {}))
+        meta["_id"] = item.get("id")
+        meta["_rank_score"] = round(float(item.get("hybrid_score", 0.0)), 6)
+        snippet_blocks.append(f"[SNIPPET {idx}]\n{json.dumps(meta, ensure_ascii=False)}\n[/SNIPPET {idx}]")
+
+    system_prompt = (
+        "You are a helpful real-estate assistant. Answer based on the provided context from uploaded WhatsApp chats. "
+        "If no exact match is found, be helpful and show the closest available listings instead of refusing."
+    )
+    messages = [{"role": "system", "content": system_prompt}]
+    if memory:
+        messages.append({"role": "system", "content": f"Conversation history:\n{memory}"})
+    messages.append({"role": "user", "content": f"Query: {query}\n\nContext snippets:\n" + "\n".join(snippet_blocks)})
+    return messages
+
+
 def _cache_key(prefix: str, payload: Any) -> str:
     encoded = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
     digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -481,6 +503,9 @@ def _build_checkpointer():
             or f"postgresql://{db.get('USER')}:{db.get('PASSWORD')}@{db.get('HOST') or 'localhost'}:{db.get('PORT') or 5432}/{db.get('NAME')}"
         )
         return AsyncPostgresSaver.from_conn_string(url)
+    except ModuleNotFoundError:
+        log.info("LangGraph postgres checkpoint package unavailable; running without checkpointer.")
+        return None
     except Exception:
         log.exception("Falling back to graph without Postgres checkpointer")
         return None

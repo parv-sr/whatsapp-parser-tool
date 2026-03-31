@@ -65,7 +65,7 @@ jobs:
         DB_PORT: 5432
         DB_NAME: whatsapp-parser-tool-db
       run: |
-        coverage run --source='.' manage.py test --keepdb --parallel auto --verbosity=2
+        coverage run --source='.' manage.py test --keepdb --parallel 1 --verbosity=2
         coverage report -m
         coverage html
 

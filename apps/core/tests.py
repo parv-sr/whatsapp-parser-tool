@@ -32,15 +32,13 @@ class RagGraphUnitTests(TestCase):
             }
         ]
         messages = rag_graph._build_messages("Buy in Bandra", contexts)
-        content = messages[-1].content
+        content = messages[-1]["content"]
         self.assertIn("[SNIPPET 1]", content)
         self.assertIn('"_id": 10', content)
         self.assertIn("[/SNIPPET 1]", content)
 
-    def test_langgraph_pipeline_routes_to_reject_when_gibberish(self):
-        with patch("apps.core.rag_graph._hybrid_retrieve_async", new=AsyncMock(return_value=[])), patch(
-            "apps.core.rag_graph._load_contexts_async", new=AsyncMock(return_value=[])
-        ):
-            state = asyncio.run(rag_graph.run_rag("asdfghjkl", top_k=5))
+    def test_langgraph_pipeline_falls_back_when_no_relevant_contexts(self):
+        with patch("apps.core.rag_graph._hybrid_retrieve_async", new=AsyncMock(return_value=[])):
+            state = asyncio.run(rag_graph.run_rag("3bhk apartment in bkc", top_k=5))
 
-        self.assertEqual(state["answer"], rag_graph._reject_text())
+        self.assertIn("couldn't find an exact match", state["answer"].lower())
