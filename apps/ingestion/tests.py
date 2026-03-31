@@ -153,8 +153,7 @@ class DeduplicationTests(TestCase):
         ]
 
         with patch("apps.ingestion.pipeline.extract_listings_from_batch", return_value=mocked_results), \
-            patch("apps.ingestion.pipeline.get_batch_embeddings", None), \
-            patch("apps.ingestion.pipeline.connection.close"):
+            patch("apps.ingestion.pipeline.get_batch_embeddings", None):
             response = process_single_llm_batch((0, [c1.id, c2.id, c3.id], raw_file.id))
 
         dupe = response["dupe"]
