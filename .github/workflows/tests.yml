@@ -27,5 +27,6 @@ jobs:
       env:
         SECRET_KEY: 'dummy-key-for-tests'
         DEBUG: 'True'
+        OPENAI_API_KEY: 'dummy-test-key-so-that-django-can-boot'
       run: |
         python manage.py test
