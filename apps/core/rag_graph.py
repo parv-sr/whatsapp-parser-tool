@@ -187,37 +187,41 @@ def _fetch_top_k_by_vector(query: str, filters: Dict[str, Any], top_k: int) -> L
     return results
 
 
-
-
 async def _afetch_top_k_by_vector(query: str, filters: Dict[str, Any], top_k: int) -> List[Dict[str, Any]]:
-    vectorstore = await get_vectorstore_async()
-    pg_filter = build_pg_filter(filters)
+    cache_key = _cache_key("vec", {"q": query, "filters": filters, "k": top_k})
 
-    if hasattr(vectorstore, "asimilarity_search_with_score"):
-        docs = await vectorstore.asimilarity_search_with_score(query=query, k=top_k, filter=pg_filter or None)
-    else:
-        docs = await asyncio.to_thread(
-            vectorstore.similarity_search_with_score,
-            query,
-            top_k,
-            pg_filter or None,
-        )
+    async def _compute() -> List[Dict[str, Any]]:
+        vectorstore = await get_vectorstore_async()
+        pg_filter = build_pg_filter(filters)
 
-    results: List[Dict[str, Any]] = []
-    for doc, score in docs:
-        meta = doc.metadata or {}
-        listing_id = meta.get("listing_chunk_id")
-        if listing_id is None:
-            listing_id = (meta.get("metadata") or {}).get("listing_chunk_id")
-        if listing_id is None:
-            continue
-        results.append(
-            {
-                "listing_chunk_id": int(listing_id),
-                "distance": float(score) if score is not None else None,
-            }
-        )
-    return results
+        if hasattr(vectorstore, "asimilarity_search_with_score"):
+            docs = await vectorstore.asimilarity_search_with_score(query=query, k=top_k, filter=pg_filter or None)
+        else:
+            docs = await asyncio.to_thread(
+                vectorstore.similarity_search_with_score,
+                query,
+                top_k,
+                pg_filter or None,
+            )
+
+        results: List[Dict[str, Any]] = []
+        for doc, score in docs:
+            meta = doc.metadata or {}
+            listing_id = meta.get("listing_chunk_id")
+            if listing_id is None:
+                listing_id = (meta.get("metadata") or {}).get("listing_chunk_id")
+            if listing_id is None:
+                continue
+            results.append(
+                {
+                    "listing_chunk_id": int(listing_id),
+                    "distance": float(score) if score is not None else None,
+                }
+            )
+        return results
+
+    return await _aget_or_set_cache(cache_key, 120, _compute)
+
 
 def _fetch_top_k_by_keyword(query: str, top_k: int) -> List[Dict[str, Any]]:
     terms = [t for t in re.split(r"\W+", query.lower()) if len(t) > 2]
