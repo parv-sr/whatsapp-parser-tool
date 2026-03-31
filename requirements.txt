@@ -1,5 +1,5 @@
 django                  # Main webapp framework
-psycopg2-binary         # PostgreSQL extension for Django
+psycopg2         # PostgreSQL extension for Django
 regex                   # For textual chunking (basically a text utility)
 python-dotenv           # For reading environemnt variables. 
 openai                  # For calling openai apis
@@ -28,3 +28,4 @@ django-celery-results   # celery backend utility
 sqlalchemy              # DB broker for celery
 kombu[sqlalchemy]       # Another celery backend utility
 rarfile                 # read .rar archives for uploaded chat bundles
+coverage>=7.0           # CI/CD Utility

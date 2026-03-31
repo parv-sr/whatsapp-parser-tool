@@ -98,8 +98,10 @@ DATABASES = {
         'PASSWORD': os.getenv("DB_PASS", "admin@2025"),
         'HOST': os.getenv("DB_HOST", "localhost"),
         'PORT': os.getenv("DB_PORT", "5432"),
-        'POOL_MODE': 'transaction',
         'CONN_MAX_AGE': 30,
+        'TEST': {
+            'CONN_MAX_AGE': 0,
+        },
         'DISABLE_SERVER_SIDE_CURSORS': True,
     }
 }
