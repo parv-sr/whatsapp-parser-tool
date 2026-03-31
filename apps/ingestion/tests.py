@@ -7,7 +7,6 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
-from django.db import connections
 
 from apps.ingestion.dedupe.pre_llm_dedupe import PreLLMDedupe
 from apps.ingestion.models import RawFile, RawMessageChunk
@@ -20,23 +19,7 @@ from apps.ingestion.pipeline import _generate_dedupe_hash, process_single_llm_ba
 from apps.preprocessing.extractor import BatchItemResult, PropertyListing
 from apps.preprocessing.models import ListingChunk
 
-
-
-
-class ConnectionCleanupTestCase(TestCase):
-    def tearDown(self):
-        super().tearDown()
-        for conn in connections.all():
-            conn.close_if_unusable_or_obsolete()
-
-    @classmethod
-    def tearDownClass(cls):
-        try:
-            connections.close_all()
-        finally:
-            super().tearDownClass()
-
-class UploadNormalizationTests(ConnectionCleanupTestCase):
+class UploadNormalizationTests(TestCase):
     def test_txt_file_is_passthrough(self):
         txt = SimpleUploadedFile("chat.txt", b"hello world", content_type="text/plain")
         from apps.ingestion.views import _normalize_input_files
@@ -64,7 +47,7 @@ class UploadNormalizationTests(ConnectionCleanupTestCase):
         self.assertEqual(extracted_file.read(), b"hello from archive")
 
 
-class WhatsAppParserPipelineTests(ConnectionCleanupTestCase):
+class WhatsAppParserPipelineTests(TestCase):
     def _raw_file(self, content: str) -> RawFile:
         return RawFile.objects.create(
             file=SimpleUploadedFile("chat.txt", content.encode("utf-8"), content_type="text/plain"),
@@ -100,7 +83,7 @@ class WhatsAppParserPipelineTests(ConnectionCleanupTestCase):
         self.assertEqual(chunks[2].status, "DUPLICATE_LOCAL")
 
 
-class DeduplicationTests(ConnectionCleanupTestCase):
+class DeduplicationTests(TestCase):
     def test_pre_llm_dedupe_flags_identical_messages_from_different_senders(self):
         deduper = PreLLMDedupe()
         message = "Available 2 bhk in Bandra West carpet 850 sqft price 3.2 cr"

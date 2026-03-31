@@ -7,30 +7,13 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
-from django.db import connections
 
 from apps.ingestion.models import RawFile, RawMessageChunk
 from apps.ingestion.pipeline import process_single_llm_batch
 from apps.preprocessing.extractor import BatchItemResult, PropertyListing, _process_packet
 from apps.preprocessing.models import ListingChunk
 
-
-
-
-class ConnectionCleanupTestCase(TestCase):
-    def tearDown(self):
-        super().tearDown()
-        for conn in connections.all():
-            conn.close_if_unusable_or_obsolete()
-
-    @classmethod
-    def tearDownClass(cls):
-        try:
-            connections.close_all()
-        finally:
-            super().tearDownClass()
-
-class PropertyListingSchemaTests(ConnectionCleanupTestCase):
+class PropertyListingSchemaTests(TestCase):
     def test_listing_intent_flips_to_request_from_cleaned_text(self):
         listing = PropertyListing(
             cleaned_text="I am looking for a flat in Bandra",
@@ -55,7 +38,7 @@ class PropertyListingSchemaTests(ConnectionCleanupTestCase):
         self.assertEqual(listing.furnishing, "FURNISHED")
 
 
-class ExtractorAndPipelineIntegrationTests(ConnectionCleanupTestCase):
+class ExtractorAndPipelineIntegrationTests(TestCase):
     def test_process_packet_uses_mocked_openai_and_validates_schema(self):
         fake_json = {
             "results": [

@@ -5,27 +5,10 @@ from unittest.mock import AsyncMock, patch
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from django.test import TestCase
-from django.db import connections
 
 from apps.core import rag_graph
 
-
-
-
-class ConnectionCleanupTestCase(TestCase):
-    def tearDown(self):
-        super().tearDown()
-        for conn in connections.all():
-            conn.close_if_unusable_or_obsolete()
-
-    @classmethod
-    def tearDownClass(cls):
-        try:
-            connections.close_all()
-        finally:
-            super().tearDownClass()
-
-class RagGraphUnitTests(ConnectionCleanupTestCase):
+class RagGraphUnitTests(TestCase):
     def test_extract_filters_for_buy_query(self):
         filters = rag_graph._extract_filters("Buy a 2bhk flat in Bandra")
         self.assertEqual(
