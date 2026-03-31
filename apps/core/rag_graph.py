@@ -1,19 +1,22 @@
 import asyncio
-import json
 import hashlib
+import json
 import logging
 import re
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, TypedDict
+from functools import lru_cache
+from typing import Any, AsyncIterator, Dict, List, Optional, TypedDict
 
-from django.conf import settings
-from django.db import connection
-from django.core.cache import cache
 from asgiref.sync import sync_to_async
-
-from langchain_core.messages import HumanMessage, SystemMessage
+from django.conf import settings
+from django.core.cache import cache
+from django.db import connection
+from django.db import connections
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableLambda, RunnableParallel
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
+from pydantic import BaseModel, Field
 
 from apps.embeddings.vector_store import build_pg_filter, get_vectorstore, get_vectorstore_async
 from apps.preprocessing.models import ListingChunk
@@ -21,15 +24,56 @@ from apps.preprocessing.models import ListingChunk
 log = logging.getLogger(__name__)
 
 DEFAULT_TOP_K = 8
+CHAT_MODEL = getattr(settings, "CHAT_MODEL", "gpt-4o-mini")
+ALLOWED_CHAT_MODELS = getattr(settings, "OPENAI_CHAT_MODELS", ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"])
+
 REAL_ESTATE_TERMS = {
     "office", "shop", "villa", "bhk", "sqft", "carpet", "price", "budget", "listing", "ownership", "commercial",
-    "residential", "tenant", "furnish", "deposit", "location", "area", "tower", "building", "layout",
+    "residential", "tenant", "furnish", "deposit", "location", "area", "tower", "building", "layout", "apartment",
+    "flat", "lease", "rent", "sale", "property",
 }
 OWNERSHIP_TERMS = {"buy", "sale", "sell", "ownership", "own", "purchase", "resale"}
 LEASE_TERMS = {"lease", "leave and license", "l&l", "license"}
 RENT_TERMS = {"rent", "rental", "tenant", "let out"}
-CHAT_MODEL = getattr(settings, "CHAT_MODEL", "gpt-4o-mini")
-ALLOWED_CHAT_MODELS = getattr(settings, "OPENAI_CHAT_MODELS", ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"])
+
+
+class RealEstateClassifier(BaseModel):
+    is_real_estate_query: bool = Field(description="True when user asks about property/listing/rent/sale/lease intent.")
+    reason: str = Field(default="")
+
+
+class QueryRewrite(BaseModel):
+    rewritten_query: str = Field(description="Expanded and normalized query for retrieval")
+
+
+class DocumentGrade(BaseModel):
+    score: int = Field(ge=1, le=10)
+    reason: str = Field(default="")
+
+
+class FinalAnswer(BaseModel):
+    answer: str
+    has_relevant_data: bool
+    sources: List[int]
+
+
+class RAGState(TypedDict, total=False):
+    query: str
+    top_k: int
+    model: str
+    temperature: float
+    memory: str
+    thread_id: str
+    is_real_estate_query: bool
+    reject_reason: str
+    rewritten_query: str
+    nearest: List[Dict[str, Any]]
+    contexts: List[Dict[str, Any]]
+    graded_contexts: List[Dict[str, Any]]
+    route: str
+    final: Dict[str, Any]
+    answer: str
+    sources: List[Dict[str, Any]]
 
 
 def _cache_key(prefix: str, payload: Any) -> str:
@@ -47,31 +91,27 @@ async def _aget_or_set_cache(cache_key: str, ttl_seconds: int, compute_fn):
     return value
 
 
-class RAGState(TypedDict, total=False):
-    query: str
-    top_k: int
-    model: str
-    temperature: float
-    nearest: List[Dict[str, Any]]
-    contexts: List[Dict[str, Any]]
-    reject: bool
-    answer: str
-    messages: List[Any]
+def _safe_model(model: Optional[str]) -> str:
+    return model if model in ALLOWED_CHAT_MODELS else CHAT_MODEL
 
 
-def _infer_transaction_type(text: str, current_value: str = "") -> str:
-    candidate = (current_value or "").upper().strip()
-    if candidate in {"RENT", "LEASE", "SALE", "OWNERSHIP"}:
-        return "SALE" if candidate == "OWNERSHIP" else candidate
+def _chat_llm(state: RAGState, temperature: Optional[float] = None) -> ChatOpenAI:
+    return ChatOpenAI(
+        model=_safe_model(state.get("model")),
+        api_key=getattr(settings, "OPENAI_API_KEY", None),
+        temperature=float(state.get("temperature", 0.0) if temperature is None else temperature),
+        max_tokens=900,
+    )
 
-    lowered = (text or "").lower()
-    if any(t in lowered for t in LEASE_TERMS):
-        return "LEASE"
-    if any(t in lowered for t in OWNERSHIP_TERMS):
-        return "SALE"
-    if any(t in lowered for t in RENT_TERMS):
-        return "RENT"
-    return "UNKNOWN"
+
+def _is_domain_query(query: str) -> bool:
+    if any(ch.isdigit() for ch in query or ""):
+        return True
+    tokens = [t for t in re.split(r"\W+", (query or "").lower()) if t]
+    if len(tokens) < 2:
+        return False
+    matches = sum(1 for t in tokens if t in REAL_ESTATE_TERMS)
+    return matches > 0
 
 
 def _with_metadata_defaults(metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -91,54 +131,36 @@ def _with_metadata_defaults(metadata: Dict[str, Any]) -> Dict[str, Any]:
     }
     normalized = dict(defaults)
     normalized.update(metadata or {})
-
     for key, value in list(normalized.items()):
         if value in [None, "", [], {}] and key not in {"contact_numbers", "features"}:
             normalized[key] = "Not specified"
-
-    raw_text = " ".join(str(normalized.get(k, "")) for k in ["listing_type", "transaction_type", "cleaned_text", "location", "features"])
-    inferred = _infer_transaction_type(raw_text, str(normalized.get("transaction_type", "")))
-    normalized["transaction_type"] = inferred
-    if normalized.get("listing_type") in ["UNKNOWN", "Not specified"]:
-        normalized["listing_type"] = inferred
     return normalized
-
-
-def _expanded_query(query: str) -> str:
-    q = (query or "").strip()
-    lower = q.lower()
-    if any(term in lower for term in {"rent", "rental", "tenant"}):
-        q += " rent rental tenant"
-    if any(term in lower for term in {"lease", "leave and license", "l&l", "license"}):
-        q += " lease leave and license"
-    if any(term in lower for term in {"buy", "sale", "ownership", "own", "purchase"}):
-        q += " sale ownership resale buy purchase"
-    return q
 
 
 def _extract_filters(query: str) -> Dict[str, Any]:
     lowered = (query or "").lower()
     filters: Dict[str, Any] = {}
-
-    if any(term in lowered for term in {"buy", "purchase", "want"}):
+    if any(term in lowered for term in {"buy", "purchase", "want", "sale"}):
         filters["transaction_type"] = "SALE"
-    elif any(term in lowered for term in {"rent", "lease"}):
+    elif any(term in lowered for term in {"rent", "lease", "tenant"}):
         filters["transaction_type"] = "RENT"
 
-    if any(term in lowered for term in {"flat", "apartment"}):
+    if any(term in lowered for term in {"flat", "apartment", "villa", "bhk"}):
         filters["property_type"] = "RESIDENTIAL"
-    elif any(term in lowered for term in {"office", "shop"}):
+    elif any(term in lowered for term in {"office", "shop", "commercial"}):
         filters["property_type"] = "COMMERCIAL"
-
     return filters
 
 
 def _extract_query_preferences(query: str) -> Dict[str, str]:
     lowered = (query or "").lower()
     prefs: Dict[str, str] = {}
-    txn = _infer_transaction_type(lowered)
-    if txn != "UNKNOWN":
-        prefs["transaction_type"] = txn
+    if any(t in lowered for t in LEASE_TERMS):
+        prefs["transaction_type"] = "LEASE"
+    elif any(t in lowered for t in OWNERSHIP_TERMS):
+        prefs["transaction_type"] = "SALE"
+    elif any(t in lowered for t in RENT_TERMS):
+        prefs["transaction_type"] = "RENT"
 
     if any(t in lowered for t in {"office", "commercial", "shop"}):
         prefs["property_type"] = "COMMERCIAL"
@@ -147,45 +169,18 @@ def _extract_query_preferences(query: str) -> Dict[str, str]:
     return prefs
 
 
-def _is_domain_query(query: str) -> bool:
-    if any(ch.isdigit() for ch in query):
-        return True
-    tokens = [t for t in re.split(r"\W+", query.lower()) if t]
-    if len(tokens) < 2:
-        return False
-    matches = sum(1 for t in tokens if t in REAL_ESTATE_TERMS)
-    return matches > 0
-
-
-def _is_gibberish(query: str) -> bool:
-    stripped = re.sub(r"\s+", "", query or "")
-    if not stripped:
-        return True
-    alnum = sum(ch.isalnum() for ch in stripped)
-    vowels = sum(ch.lower() in "aeiou" for ch in stripped if ch.isalpha())
-    return alnum < 4 or (vowels == 0 and len(stripped) >= 6)
-
-
 def _fetch_top_k_by_vector(query: str, filters: Dict[str, Any], top_k: int) -> List[Dict[str, Any]]:
     vectorstore = get_vectorstore()
     pg_filter = build_pg_filter(filters)
     docs = vectorstore.similarity_search_with_score(query=query, k=top_k, filter=pg_filter or None)
-
-    results: List[Dict[str, Any]] = []
+    out: List[Dict[str, Any]] = []
     for doc, score in docs:
         meta = doc.metadata or {}
-        listing_id = meta.get("listing_chunk_id")
-        if listing_id is None:
-            listing_id = (meta.get("metadata") or {}).get("listing_chunk_id")
-        if listing_id is None:
+        lid = meta.get("listing_chunk_id") or (meta.get("metadata") or {}).get("listing_chunk_id")
+        if lid is None:
             continue
-        results.append(
-            {
-                "listing_chunk_id": int(listing_id),
-                "distance": float(score) if score is not None else None,
-            }
-        )
-    return results
+        out.append({"listing_chunk_id": int(lid), "distance": float(score) if score is not None else None})
+    return out
 
 
 async def _afetch_top_k_by_vector(query: str, filters: Dict[str, Any], top_k: int) -> List[Dict[str, Any]]:
@@ -194,32 +189,18 @@ async def _afetch_top_k_by_vector(query: str, filters: Dict[str, Any], top_k: in
     async def _compute() -> List[Dict[str, Any]]:
         vectorstore = await get_vectorstore_async()
         pg_filter = build_pg_filter(filters)
-
         if hasattr(vectorstore, "asimilarity_search_with_score"):
             docs = await vectorstore.asimilarity_search_with_score(query=query, k=top_k, filter=pg_filter or None)
         else:
-            docs = await asyncio.to_thread(
-                vectorstore.similarity_search_with_score,
-                query,
-                top_k,
-                pg_filter or None,
-            )
-
-        results: List[Dict[str, Any]] = []
+            docs = await asyncio.to_thread(vectorstore.similarity_search_with_score, query, top_k, pg_filter or None)
+        out: List[Dict[str, Any]] = []
         for doc, score in docs:
             meta = doc.metadata or {}
-            listing_id = meta.get("listing_chunk_id")
-            if listing_id is None:
-                listing_id = (meta.get("metadata") or {}).get("listing_chunk_id")
-            if listing_id is None:
+            lid = meta.get("listing_chunk_id") or (meta.get("metadata") or {}).get("listing_chunk_id")
+            if lid is None:
                 continue
-            results.append(
-                {
-                    "listing_chunk_id": int(listing_id),
-                    "distance": float(score) if score is not None else None,
-                }
-            )
-        return results
+            out.append({"listing_chunk_id": int(lid), "distance": float(score) if score is not None else None})
+        return out
 
     return await _aget_or_set_cache(cache_key, 120, _compute)
 
@@ -252,7 +233,6 @@ def _fetch_top_k_by_keyword(query: str, top_k: int) -> List[Dict[str, Any]]:
     for t in terms:
         like = f"%{t}%"
         params.extend([like, like])
-
     params.append(top_k)
 
     with connection.cursor() as cur:
@@ -263,15 +243,14 @@ def _fetch_top_k_by_keyword(query: str, top_k: int) -> List[Dict[str, Any]]:
 
 
 def _hybrid_retrieve(query: str, top_k: int) -> List[Dict[str, Any]]:
-    expanded = _expanded_query(query)
     candidate_pool = max(32, top_k * 5)
     filters = _extract_filters(query)
-    vec_hits = _fetch_top_k_by_vector(expanded, filters=filters, top_k=candidate_pool)
-    kw_hits = _fetch_top_k_by_keyword(expanded, top_k=candidate_pool)
+    vec_hits = _fetch_top_k_by_vector(query, filters=filters, top_k=candidate_pool)
+    kw_hits = _fetch_top_k_by_keyword(query, top_k=candidate_pool)
 
     fused_scores: Dict[int, float] = defaultdict(float)
     rank_data: Dict[int, Dict[str, Any]] = {}
-    query_prefs = _extract_query_preferences(query)
+    prefs = _extract_query_preferences(query)
     max_kw = max((item.get("keyword_score", 0.0) for item in kw_hits), default=0.0)
 
     for rank, item in enumerate(vec_hits, start=1):
@@ -289,33 +268,37 @@ def _hybrid_retrieve(query: str, top_k: int) -> List[Dict[str, Any]]:
             rank_data[lid] = {**rank_data.get(lid, {}), **item}
 
     listing_ids = list(fused_scores.keys())
-    listing_map = {
-        l.id: l
-        for l in ListingChunk.objects.filter(id__in=listing_ids).only("id", "transaction_type", "category")
-    }
+    listing_map = {l.id: l for l in ListingChunk.objects.filter(id__in=listing_ids).only("id", "transaction_type", "category")}
 
     for lid in listing_ids:
         listing = listing_map.get(lid)
         if not listing:
             continue
-        if query_prefs.get("transaction_type") and listing.transaction_type == query_prefs["transaction_type"]:
+        if prefs.get("transaction_type") and listing.transaction_type == prefs["transaction_type"]:
             fused_scores[lid] += 0.2
-
-        property_pref = query_prefs.get("property_type")
-        if property_pref == "COMMERCIAL" and listing.category == "COMMERCIAL":
+        pref = prefs.get("property_type")
+        if pref == "COMMERCIAL" and listing.category == "COMMERCIAL":
             fused_scores[lid] += 0.15
-        if property_pref == "RESIDENTIAL" and listing.category == "RESIDENTIAL":
+        if pref == "RESIDENTIAL" and listing.category == "RESIDENTIAL":
             fused_scores[lid] += 0.15
 
     ranked_ids = [lid for lid, _ in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]]
     return [{"listing_chunk_id": lid, **rank_data.get(lid, {}), "hybrid_score": fused_scores[lid]} for lid in ranked_ids]
 
 
+async def _hybrid_retrieve_async(query: str, top_k: int) -> List[Dict[str, Any]]:
+    cache_key = _cache_key("hybrid", {"q": query, "k": top_k})
+
+    async def _compute() -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(_hybrid_retrieve, query, top_k)
+
+    return await _aget_or_set_cache(cache_key, 90, _compute)
+
+
 def _load_contexts(nearest: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     listing_ids = [item["listing_chunk_id"] for item in nearest if item.get("listing_chunk_id")]
     listing_map = {l.id: l for l in ListingChunk.objects.filter(id__in=listing_ids)}
-
-    contexts = []
+    contexts: List[Dict[str, Any]] = []
     for item in nearest:
         lid = item.get("listing_chunk_id")
         listing = listing_map.get(lid)
@@ -333,146 +316,269 @@ def _load_contexts(nearest: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return contexts
 
 
-def _build_messages(query: str, contexts: List[Dict[str, Any]], memory: str = "") -> List[Any]:
-    snippet_blocks = []
-    for idx, item in enumerate(contexts, start=1):
-        meta = dict(item.get("metadata", {}))
-        meta["_id"] = item.get("id")
-        meta["_rank_score"] = round(float(item.get("hybrid_score", 0.0)), 6)
-        snippet_blocks.append(f"[SNIPPET {idx}]\n{json.dumps(meta, ensure_ascii=False)}\n[/SNIPPET {idx}]")
+async def _classify_query_node(state: RAGState) -> RAGState:
+    query = state.get("query", "").strip()
+    if _is_domain_query(query):
+        return {"is_real_estate_query": True, "reject_reason": "heuristic"}
 
-    system_prompt = (
-        "You are a real-estate listings assistant for retrieval QA. "
-        "Only use snippet JSON facts. If query is irrelevant, gibberish, or outside real-estate listings, reply exactly: "
-        "'I can only help with real-estate listing queries based on uploaded WhatsApp data.'\n\n"
-        "When relevant:\n"
-        "1) Rank listings by relevance to the user query giving priority to explicit constraints (location, budget, BHK, transaction type, furnishing, parking).\n"
-        "2) Output concise markdown with sections: 'Top Matches' then 'Details'.\n"
-        "3) In 'Top Matches', include numbered bullets with listing id and why relevant.\n"
-        "4) In 'Details', provide a markdown table with columns: id, transaction_type, property_type, location, bhk, sqft, price, furnishing, parking, contact_numbers.\n"
-        "5) Never leave blank values: write 'Not specified'.\n"
-        "6) Distinguish RENT vs LEASE vs SALE clearly.\n"
-        "7) If query asks for filtering, return only matching listings from snippets when possible.\n"
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", "Classify if the query is about real-estate search, listing advice, rent/sale/lease, pricing, area, or property features."),
+            ("human", "Query: {query}"),
+        ]
     )
-
-    messages: List[Any] = [SystemMessage(content=system_prompt)]
-    if memory:
-        messages.append(SystemMessage(content=f"Conversation history:\n{memory}"))
-
-    user_prompt = f"Query: {query}\n\nContext snippets:\n" + "\n".join(snippet_blocks)
-    messages.append(HumanMessage(content=user_prompt))
-    return messages
+    llm = _chat_llm(state, temperature=0.0).with_structured_output(RealEstateClassifier)
+    result = await (prompt | llm).ainvoke({"query": query})
+    return {"is_real_estate_query": bool(result.is_real_estate_query), "reject_reason": result.reason}
 
 
-def _reject_text() -> str:
-    return "I can only help with real-estate listing queries based on uploaded WhatsApp data."
-
-
-def _route_after_retrieve(state: RAGState) -> str:
-    return "reject" if state.get("reject") else "respond"
-
-
-async def _hybrid_retrieve_async(query: str, top_k: int) -> List[Dict[str, Any]]:
-    cache_key = _cache_key("hybrid", {"q": query, "k": top_k})
-
-    async def _compute() -> List[Dict[str, Any]]:
-        return await asyncio.to_thread(_hybrid_retrieve, query, top_k)
-
-    return await _aget_or_set_cache(cache_key, 90, _compute)
-
-
-async def _load_contexts_async(nearest: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    cache_key = _cache_key("ctx", nearest)
-
-    async def _compute() -> List[Dict[str, Any]]:
-        return await asyncio.to_thread(_load_contexts, nearest)
-
-    return await _aget_or_set_cache(cache_key, 90, _compute)
+async def _rewrite_query_node(state: RAGState) -> RAGState:
+    query = state.get("query", "")
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "Rewrite the query for real-estate retrieval. Expand abbreviations and normalize terms. "
+                "Examples: bkc -> bandra kurla complex mumbai, 3bhk -> 3 bhk apartment. Return concise text.",
+            ),
+            ("human", "Original query: {query}"),
+        ]
+    )
+    llm = _chat_llm(state, temperature=0.0).with_structured_output(QueryRewrite)
+    rewritten = await (prompt | llm).ainvoke({"query": query})
+    return {"rewritten_query": rewritten.rewritten_query.strip() or query}
 
 
 async def _retrieve_node(state: RAGState) -> RAGState:
-    query = state.get("query", "")
     top_k = max(1, min(30, int(state.get("top_k") or DEFAULT_TOP_K)))
-    nearest = await _hybrid_retrieve_async(query, top_k=top_k)
-    contexts = await _load_contexts_async(nearest)
-    reject = _is_gibberish(query) or (not contexts and not _is_domain_query(query))
-    return {"nearest": nearest, "contexts": contexts, "reject": reject}
+    rewritten = state.get("rewritten_query") or state.get("query", "")
 
-
-async def _reject_node(_: RAGState) -> RAGState:
-    cache_key = _cache_key("reject", "static")
-
-    async def _compute() -> RAGState:
-        return {"answer": _reject_text()}
-
-    return await _aget_or_set_cache(cache_key, 3600, _compute)
-
-
-async def _respond_node(state: RAGState) -> RAGState:
-    model = state.get("model") if state.get("model") in ALLOWED_CHAT_MODELS else CHAT_MODEL
-    temperature = float(state.get("temperature", 0.0))
-    query = state.get("query", "")
-    contexts = state.get("contexts", [])
-    memory = state.get("memory", "")
-
-    cache_key = _cache_key(
-        "resp",
-        {"model": model, "temperature": temperature, "query": query, "contexts": contexts, "memory": memory},
+    parallel = RunnableParallel(
+        nearest=RunnableLambda(lambda x: _hybrid_retrieve_async(x["q"], x["k"])),
+        prefs=RunnableLambda(lambda x: asyncio.to_thread(_extract_query_preferences, x["q"])),
     )
+    result = await parallel.ainvoke({"q": rewritten, "k": top_k})
+    contexts = await asyncio.to_thread(_load_contexts, result["nearest"])
+    return {"nearest": result["nearest"], "contexts": contexts}
 
-    async def _compute() -> RAGState:
-        messages = _build_messages(query, contexts, memory=memory)
-        llm = ChatOpenAI(
-            model=model,
-            api_key=getattr(settings, "OPENAI_API_KEY", None),
-            temperature=temperature,
-            max_tokens=900,
+
+async def _grade_documents_node(state: RAGState) -> RAGState:
+    contexts = state.get("contexts", [])
+    query = state.get("rewritten_query") or state.get("query", "")
+    if not contexts:
+        return {"graded_contexts": []}
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", "Score relevance of a listing chunk to a real-estate query from 1-10."),
+            ("human", "Query: {query}\nListing JSON: {listing_json}"),
+        ]
+    )
+    llm = _chat_llm(state, temperature=0.0).with_structured_output(DocumentGrade)
+
+    async def _grade_one(ctx: Dict[str, Any]) -> Dict[str, Any]:
+        listing_json = json.dumps(ctx.get("metadata", {}), ensure_ascii=False)
+        grade = await (prompt | llm).ainvoke({"query": query, "listing_json": listing_json})
+        merged = dict(ctx)
+        merged["relevance_score"] = int(grade.score)
+        merged["relevance_reason"] = grade.reason
+        return merged
+
+    graded = await asyncio.gather(*[_grade_one(ctx) for ctx in contexts])
+    graded.sort(key=lambda x: (x.get("relevance_score", 0), x.get("hybrid_score", 0.0)), reverse=True)
+    return {"graded_contexts": graded}
+
+
+def _route_after_classify(state: RAGState) -> str:
+    return "rewrite_query" if state.get("is_real_estate_query") else "fallback"
+
+
+def _route_after_grading(state: RAGState) -> str:
+    graded = state.get("graded_contexts", [])
+    if any((ctx.get("relevance_score") or 0) >= 7 for ctx in graded):
+        return "generate"
+    return "fallback"
+
+
+async def _generate_node(state: RAGState) -> RAGState:
+    query = state.get("query", "")
+    memory = state.get("memory", "")
+    graded_contexts = [ctx for ctx in state.get("graded_contexts", []) if (ctx.get("relevance_score") or 0) >= 7]
+    snippet_blocks = []
+    for idx, item in enumerate(graded_contexts, start=1):
+        meta = dict(item.get("metadata", {}))
+        meta["_id"] = item.get("id")
+        meta["_score"] = item.get("relevance_score", 0)
+        snippet_blocks.append(f"[SNIPPET {idx}]\\n{json.dumps(meta, ensure_ascii=False)}\\n[/SNIPPET {idx}]")
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "You are a helpful real-estate assistant. Answer based on the provided context from uploaded WhatsApp chats. "
+                "If no exact match is found, be helpful and show the closest available listings instead of refusing.",
+            ),
+            ("system", "Conversation history:\n{memory}"),
+            ("human", "User query: {query}\n\nContext snippets:\n{snippets}"),
+        ]
+    )
+    llm = _chat_llm(state).with_structured_output(FinalAnswer)
+    result = await (prompt | llm).ainvoke({"query": query, "memory": memory or "None", "snippets": "\n".join(snippet_blocks)})
+    return {"final": result.model_dump()}
+
+
+async def _fallback_node(state: RAGState) -> RAGState:
+    graded = state.get("graded_contexts") or state.get("contexts") or []
+    top = graded[:3]
+    previews = []
+    source_ids: List[int] = []
+    for item in top:
+        meta = item.get("metadata", {})
+        source_ids.append(int(item.get("id")))
+        previews.append(
+            f"- #{item.get('id')} | {meta.get('location', 'Not specified')} | "
+            f"{meta.get('bhk', 'Not specified')} | {meta.get('price', 'Not specified')}"
         )
-        response = await llm.ainvoke(messages)
-        answer = (response.content or "").strip() if response else ""
-        if not answer:
-            answer = "I couldn't find enough listing evidence to answer that reliably."
-        return {"answer": answer, "messages": messages, "model": model}
 
-    return await _aget_or_set_cache(cache_key, 60, _compute)
+    if not state.get("is_real_estate_query", True):
+        answer = (
+            "I can help with real-estate queries based on your uploaded WhatsApp chats. "
+            "Please ask about locations, budgets, BHK, rent/sale/lease, or listing features."
+        )
+        return {"final": {"answer": answer, "has_relevant_data": False, "sources": []}}
+
+    if previews:
+        answer = (
+            "I couldn't find an exact match in your uploaded chats, but here are the closest listings I have:\n"
+            + "\n".join(previews)
+        )
+    else:
+        answer = "I couldn't find an exact match in your uploaded chats yet. Try adding area, budget, and property type for better matches."
+
+    return {"final": {"answer": answer, "has_relevant_data": False, "sources": source_ids}}
+
+
+async def _format_output_node(state: RAGState) -> RAGState:
+    final = state.get("final") or {}
+    answer = (final.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
+    source_ids = set(final.get("sources") or [])
+    contexts = state.get("graded_contexts") or state.get("contexts") or []
+    sources = [ctx for ctx in contexts if ctx.get("id") in source_ids]
+    return {"answer": answer, "sources": sources}
+
+
+@lru_cache(maxsize=1)
+def _build_checkpointer():
+    try:
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+        db = connections["default"].settings_dict
+        if db.get("ENGINE", "").endswith("sqlite3"):
+            return None
+        url = (
+            getattr(settings, "LANGGRAPH_CHECKPOINT_DSN", None)
+            or db.get("OPTIONS", {}).get("dsn")
+            or f"postgresql://{db.get('USER')}:{db.get('PASSWORD')}@{db.get('HOST') or 'localhost'}:{db.get('PORT') or 5432}/{db.get('NAME')}"
+        )
+        return AsyncPostgresSaver.from_conn_string(url)
+    except Exception:
+        log.exception("Falling back to graph without Postgres checkpointer")
+        return None
 
 
 def build_rag_graph():
     graph = StateGraph(RAGState)
+    graph.add_node("classify", _classify_query_node)
+    graph.add_node("rewrite_query", _rewrite_query_node)
     graph.add_node("retrieve", _retrieve_node)
-    graph.add_node("reject", _reject_node)
-    graph.add_node("respond", _respond_node)
-    graph.set_entry_point("retrieve")
-    graph.add_conditional_edges("retrieve", _route_after_retrieve, {"reject": "reject", "respond": "respond"})
-    graph.add_edge("reject", END)
-    graph.add_edge("respond", END)
-    return graph.compile()
+    graph.add_node("grade_documents", _grade_documents_node)
+    graph.add_node("generate", _generate_node)
+    graph.add_node("fallback", _fallback_node)
+    graph.add_node("format_output", _format_output_node)
+
+    graph.set_entry_point("classify")
+    graph.add_conditional_edges("classify", _route_after_classify, {"rewrite_query": "rewrite_query", "fallback": "fallback"})
+    graph.add_edge("rewrite_query", "retrieve")
+    graph.add_edge("retrieve", "grade_documents")
+    graph.add_conditional_edges("grade_documents", _route_after_grading, {"generate": "generate", "fallback": "fallback"})
+    graph.add_edge("generate", "format_output")
+    graph.add_edge("fallback", "format_output")
+    graph.add_edge("format_output", END)
+
+    checkpointer = _build_checkpointer()
+    return graph.compile(checkpointer=checkpointer) if checkpointer else graph.compile()
 
 
 RAG_WORKFLOW = build_rag_graph()
 
 
-async def run_rag(query: str, top_k: int = DEFAULT_TOP_K, model: str = CHAT_MODEL, temperature: float = 0.0, memory: str = "") -> RAGState:
+async def run_rag(
+    query: str,
+    top_k: int = DEFAULT_TOP_K,
+    model: str = CHAT_MODEL,
+    temperature: float = 0.0,
+    memory: str = "",
+    thread_id: str = "default",
+) -> RAGState:
     state: RAGState = {
         "query": query,
         "top_k": top_k,
         "model": model,
         "temperature": temperature,
         "memory": memory,
+        "thread_id": thread_id,
     }
-    return await RAG_WORKFLOW.ainvoke(state)
+    config = {"configurable": {"thread_id": thread_id}}
+    return await RAG_WORKFLOW.ainvoke(state, config=config)
 
 
-def stream_llm_from_state(state: RAGState):
-    model = state.get("model") if state.get("model") in ALLOWED_CHAT_MODELS else CHAT_MODEL
-    llm = ChatOpenAI(
-        model=model,
-        api_key=getattr(settings, "OPENAI_API_KEY", None),
-        temperature=float(state.get("temperature", 0.0)),
-        max_tokens=900,
-        streaming=True,
-    )
-    for chunk in llm.stream(state.get("messages", [])):
-        text = chunk.content or ""
-        if text:
-            yield text
+async def stream_rag_events(
+    query: str,
+    top_k: int,
+    model: str,
+    temperature: float,
+    memory: str,
+    thread_id: str,
+) -> AsyncIterator[Dict[str, Any]]:
+    state: RAGState = {
+        "query": query,
+        "top_k": top_k,
+        "model": model,
+        "temperature": temperature,
+        "memory": memory,
+        "thread_id": thread_id,
+    }
+    config = {"configurable": {"thread_id": thread_id}}
+
+    final_state: Dict[str, Any] = {}
+    async for event in RAG_WORKFLOW.astream_events(state, config=config, version="v2"):
+        if event.get("event") == "on_chat_model_stream":
+            chunk = event.get("data", {}).get("chunk")
+            delta = getattr(chunk, "content", "") if chunk else ""
+            if isinstance(delta, list):
+                delta = "".join(part.get("text", "") for part in delta if isinstance(part, dict))
+            if delta:
+                yield {"type": "token", "delta": delta}
+
+        if event.get("event") == "on_chain_end" and event.get("name") == "format_output":
+            maybe_state = event.get("data", {}).get("output") or {}
+            if isinstance(maybe_state, dict):
+                final_state = maybe_state
+
+    if not final_state:
+        final_state = await run_rag(query, top_k, model, temperature, memory, thread_id)
+
+    answer = (final_state.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
+    sources = final_state.get("sources") or []
+    yield {"type": "final", "answer": answer, "sources": sources, "model": _safe_model(model)}
+
+
+async def get_recent_messages_text(user, limit: int = 6) -> str:
+    def _load() -> str:
+        msgs = ChatMessage.objects.filter(user=user).order_by("-timestamp")[:limit]
+        msgs = list(reversed(msgs))
+        return "\n".join(f"{m.role.upper()}: {m.content}" for m in msgs)
+
+    from apps.core.models import ChatMessage
+
+    return await sync_to_async(_load)()
