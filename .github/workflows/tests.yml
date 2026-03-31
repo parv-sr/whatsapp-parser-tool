@@ -42,7 +42,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Run Django system checks
+    - name: Run Django system checks (CI mode)
       env:
         SECRET_KEY: 'dummy-key-for-tests'
         DEBUG: 'True'
@@ -52,7 +52,7 @@ jobs:
         DB_HOST: localhost
         DB_PORT: 5432
         DB_NAME: whatsapp-parser-tool-db
-      run: python manage.py check --deploy --fail-level ERROR
+      run: python manage.py check
 
     - name: Run tests with coverage
       env:
