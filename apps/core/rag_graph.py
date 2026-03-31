@@ -383,9 +383,15 @@ async def _retrieve_node(state: RAGState) -> RAGState:
     top_k = max(1, min(30, int(state.get("top_k") or DEFAULT_TOP_K)))
     rewritten = state.get("rewritten_query") or state.get("query", "")
 
+    async def _nearest_runner(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+        return await _hybrid_retrieve_async(payload["q"], payload["k"])
+
+    async def _prefs_runner(payload: Dict[str, Any]) -> Dict[str, str]:
+        return await asyncio.to_thread(_extract_query_preferences, payload["q"])
+
     parallel = RunnableParallel(
-        nearest=RunnableLambda(lambda x: _hybrid_retrieve_async(x["q"], x["k"])),
-        prefs=RunnableLambda(lambda x: asyncio.to_thread(_extract_query_preferences, x["q"])),
+        nearest=RunnableLambda(_nearest_runner),
+        prefs=RunnableLambda(_prefs_runner),
     )
     result = await parallel.ainvoke({"q": rewritten, "k": top_k})
     contexts = await asyncio.to_thread(_load_contexts, result["nearest"])
