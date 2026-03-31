@@ -80,8 +80,8 @@ class ExtractorAndPipelineIntegrationTests(TestCase):
             file_name="chunk.txt",
             content="x",
         )
-        c1 = RawMessageChunk.objects.create(rawfile=raw_file, sender="Sender A", raw_text="Available 2 bhk for sale in Bandra West")
-        c2 = RawMessageChunk.objects.create(rawfile=raw_file, sender="Sender B", raw_text="Need office on lease in Lower Parel")
+        c1 = RawMessageChunk.objects.create(rawfile=raw_file, sender="Sender A", raw_text="msg one")
+        c2 = RawMessageChunk.objects.create(rawfile=raw_file, sender="Sender B", raw_text="msg two")
 
         fake_results = [
             BatchItemResult(
@@ -101,7 +101,8 @@ class ExtractorAndPipelineIntegrationTests(TestCase):
         ]
 
         with patch("apps.ingestion.pipeline.extract_listings_from_batch", return_value=fake_results), \
-        patch("apps.ingestion.pipeline.get_batch_embeddings", None):
+        patch("apps.ingestion.pipeline.get_batch_embeddings", None), \
+        patch("apps.ingestion.pipeline.connection.close"):
             process_single_llm_batch((0, [c1.id, c2.id], raw_file.id))
 
         created = ListingChunk.objects.filter(raw_chunk=c1)
