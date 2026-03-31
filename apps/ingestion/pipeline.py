@@ -10,7 +10,7 @@ import multiprocessing
 import threading
 
 from django.utils import timezone
-from django.db import transaction, close_old_connections
+from django.db import transaction, close_old_connections, connections
 from django.core.cache import cache
 
 # Models
@@ -167,7 +167,7 @@ def process_single_llm_batch(batch_data):
     batch_idx, chunk_ids, raw_file_id = batch_data
 
     try:
-        chunks = RawMessageChunk.objects.filter(id__in=chunk_ids)
+        chunks = RawMessageChunk.objects.filter(id__in=chunk_ids).order_by("id")
         if not chunks.exists():
             return {"chunk_count": 0, "dupe": DupeTracker().as_dict()}
 
@@ -307,6 +307,7 @@ def process_single_llm_batch(batch_data):
     finally:
         if manage_connections:
             close_old_connections()
+            connections.close_all()
 
 
 def _process_file_in_background_sync(raw_file_id: int):
