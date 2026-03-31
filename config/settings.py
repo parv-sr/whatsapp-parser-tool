@@ -8,6 +8,7 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 import ssl
+import sys
 
 load_dotenv()
 
@@ -263,3 +264,10 @@ else:
     SECURE_HSTS_SECONDS = 31536000  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
+
+
+# Disable migrations during tests to avoid historical conflicts
+if 'test' in sys.argv:
+    MIGRATION_MODULES = {
+        app.split('.')[-1]: None for app in INSTALLED_APPS
+    }
