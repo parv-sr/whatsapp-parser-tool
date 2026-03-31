@@ -7,6 +7,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
+from django.db import connections
 
 from apps.ingestion.models import RawFile, RawMessageChunk
 from apps.ingestion.pipeline import process_single_llm_batch
@@ -14,7 +15,14 @@ from apps.preprocessing.extractor import BatchItemResult, PropertyListing, _proc
 from apps.preprocessing.models import ListingChunk
 
 
-class PropertyListingSchemaTests(TestCase):
+
+
+class ConnectionCleanupTestCase(TestCase):
+    def tearDown(self):
+        connections.close_all()
+        super().tearDown()
+
+class PropertyListingSchemaTests(ConnectionCleanupTestCase):
     def test_listing_intent_flips_to_request_from_cleaned_text(self):
         listing = PropertyListing(
             cleaned_text="I am looking for a flat in Bandra",
@@ -39,7 +47,7 @@ class PropertyListingSchemaTests(TestCase):
         self.assertEqual(listing.furnishing, "FURNISHED")
 
 
-class ExtractorAndPipelineIntegrationTests(TestCase):
+class ExtractorAndPipelineIntegrationTests(ConnectionCleanupTestCase):
     def test_process_packet_uses_mocked_openai_and_validates_schema(self):
         fake_json = {
             "results": [
@@ -80,8 +88,8 @@ class ExtractorAndPipelineIntegrationTests(TestCase):
             file_name="chunk.txt",
             content="x",
         )
-        c1 = RawMessageChunk.objects.create(rawfile=raw_file, sender="Sender A", raw_text="msg one")
-        c2 = RawMessageChunk.objects.create(rawfile=raw_file, sender="Sender B", raw_text="msg two")
+        c1 = RawMessageChunk.objects.create(rawfile=raw_file, sender="Sender A", raw_text="Available 2 bhk for sale in Bandra West")
+        c2 = RawMessageChunk.objects.create(rawfile=raw_file, sender="Sender B", raw_text="Need office on lease in Lower Parel")
 
         fake_results = [
             BatchItemResult(
@@ -101,8 +109,7 @@ class ExtractorAndPipelineIntegrationTests(TestCase):
         ]
 
         with patch("apps.ingestion.pipeline.extract_listings_from_batch", return_value=fake_results), \
-        patch("apps.ingestion.pipeline.get_batch_embeddings", None), \
-        patch("apps.ingestion.pipeline.connection.close"):
+        patch("apps.ingestion.pipeline.get_batch_embeddings", None):
             process_single_llm_batch((0, [c1.id, c2.id], raw_file.id))
 
         created = ListingChunk.objects.filter(raw_chunk=c1)

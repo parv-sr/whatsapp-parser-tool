@@ -7,9 +7,10 @@ import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 import multiprocessing
+import threading
 
 from django.utils import timezone
-from django.db import connection, transaction, close_old_connections
+from django.db import transaction, connection, close_old_connections
 from django.core.cache import cache
 
 # Models
@@ -159,12 +160,14 @@ def process_single_llm_batch(batch_data):
     THREAD WORKER: Processes a batch of message chunks.
     CRITICAL: Manages DB connections explicitly to prevent deadlocks.
     """
-    close_old_connections()
+    manage_db_connection = threading.current_thread() is not threading.main_thread()
+    if manage_db_connection:
+        close_old_connections()
 
     batch_idx, chunk_ids, raw_file_id = batch_data
 
     try:
-        chunks = RawMessageChunk.objects.filter(id__in=chunk_ids)
+        chunks = RawMessageChunk.objects.filter(id__in=chunk_ids).order_by("id")
         if not chunks.exists():
             return {"chunk_count": 0, "dupe": DupeTracker().as_dict()}
 
@@ -214,7 +217,7 @@ def process_single_llm_batch(batch_data):
             for listing_data in res.listings:
                 tracker.add_candidate()
                 text_for_hash = listing_data.cleaned_text
-                composite_key = f"{chunk.sender}|{listing_data.location}|{listing_data.listing_type}|{text_for_hash[:200]}"
+                composite_key = f"{chunk.sender}|{listing_data.location}|{listing_data.transaction_type}|{text_for_hash[:200]}"
                 composite_hash = _generate_dedupe_hash(text_for_hash, chunk.sender)
 
                 # 2) in-batch dedupe
@@ -228,7 +231,7 @@ def process_single_llm_batch(batch_data):
                     tracker.add_in_db(composite_hash)
                     continue
 
-                vector_text = f"{listing_data.cleaned_text} {listing_data.location} {listing_data.listing_type}"
+                vector_text = f"{listing_data.cleaned_text} {listing_data.location} {listing_data.transaction_type}"
 
                 lc = ListingChunk(
                     raw_chunk=chunk,
@@ -237,9 +240,9 @@ def process_single_llm_batch(batch_data):
                     composite_key=composite_key,
                     composite_hash=composite_hash,
                     metadata=listing_data.model_dump(exclude={"cleaned_text"}),
-                    intent="LISTING" if listing_data.listing_type in ["RENT", "LEASE", "SALE", "OWNERSHIP"] else "REQUIREMENT",
+                    intent="LISTING" if listing_data.listing_intent == "OFFER" else "REQUIREMENT",
                     category=listing_data.property_type,
-                    transaction_type="SALE" if listing_data.listing_type == "OWNERSHIP" else listing_data.listing_type,
+                    transaction_type=listing_data.transaction_type,
                     confidence=0.9,
                     status="ACTIVE",
                 )
@@ -302,7 +305,11 @@ def process_single_llm_batch(batch_data):
         RawMessageChunk.objects.filter(id__in=chunk_ids).update(status="ERROR")
         return {"chunk_count": 0, "dupe": DupeTracker().as_dict()}
     finally:
-        connection.close()
+        if manage_db_connection:
+            try:
+                connection.close()
+            except Exception:
+                close_old_connections()
 
 
 def _process_file_in_background_sync(raw_file_id: int):

@@ -7,6 +7,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
+from django.db import connections
 
 from apps.ingestion.dedupe.pre_llm_dedupe import PreLLMDedupe
 from apps.ingestion.models import RawFile, RawMessageChunk
@@ -20,7 +21,14 @@ from apps.preprocessing.extractor import BatchItemResult, PropertyListing
 from apps.preprocessing.models import ListingChunk
 
 
-class UploadNormalizationTests(TestCase):
+
+
+class ConnectionCleanupTestCase(TestCase):
+    def tearDown(self):
+        connections.close_all()
+        super().tearDown()
+
+class UploadNormalizationTests(ConnectionCleanupTestCase):
     def test_txt_file_is_passthrough(self):
         txt = SimpleUploadedFile("chat.txt", b"hello world", content_type="text/plain")
         from apps.ingestion.views import _normalize_input_files
@@ -48,7 +56,7 @@ class UploadNormalizationTests(TestCase):
         self.assertEqual(extracted_file.read(), b"hello from archive")
 
 
-class WhatsAppParserPipelineTests(TestCase):
+class WhatsAppParserPipelineTests(ConnectionCleanupTestCase):
     def _raw_file(self, content: str) -> RawFile:
         return RawFile.objects.create(
             file=SimpleUploadedFile("chat.txt", content.encode("utf-8"), content_type="text/plain"),
@@ -84,7 +92,7 @@ class WhatsAppParserPipelineTests(TestCase):
         self.assertEqual(chunks[2].status, "DUPLICATE_LOCAL")
 
 
-class DeduplicationTests(TestCase):
+class DeduplicationTests(ConnectionCleanupTestCase):
     def test_pre_llm_dedupe_flags_identical_messages_from_different_senders(self):
         deduper = PreLLMDedupe()
         message = "Available 2 bhk in Bandra West carpet 850 sqft price 3.2 cr"
@@ -153,8 +161,7 @@ class DeduplicationTests(TestCase):
         ]
 
         with patch("apps.ingestion.pipeline.extract_listings_from_batch", return_value=mocked_results), \
-            patch("apps.ingestion.pipeline.get_batch_embeddings", None), \
-            patch("apps.ingestion.pipeline.connection.close"):
+            patch("apps.ingestion.pipeline.get_batch_embeddings", None):
             response = process_single_llm_batch((0, [c1.id, c2.id, c3.id], raw_file.id))
 
         dupe = response["dupe"]
