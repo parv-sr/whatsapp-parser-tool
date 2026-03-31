@@ -25,8 +25,16 @@ from apps.preprocessing.models import ListingChunk
 
 class ConnectionCleanupTestCase(TestCase):
     def tearDown(self):
-        connections.close_all()
         super().tearDown()
+        for conn in connections.all():
+            conn.close_if_unusable_or_obsolete()
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            connections.close_all()
+        finally:
+            super().tearDownClass()
 
 class UploadNormalizationTests(ConnectionCleanupTestCase):
     def test_txt_file_is_passthrough(self):
