@@ -349,9 +349,13 @@ async def _classify_query_node(state: RAGState) -> RAGState:
             ("human", "Query: {query}"),
         ]
     )
-    llm = _chat_llm(state, temperature=0.0).with_structured_output(RealEstateClassifier)
-    result = await (prompt | llm).ainvoke({"query": query})
-    return {"is_real_estate_query": bool(result.is_real_estate_query), "reject_reason": result.reason}
+    try:
+        llm = _chat_llm(state, temperature=0.0).with_structured_output(RealEstateClassifier)
+        result = await (prompt | llm).ainvoke({"query": query})
+        return {"is_real_estate_query": bool(result.is_real_estate_query), "reject_reason": result.reason}
+    except Exception:
+        log.warning("Classifier LLM failed; falling back to heuristic classifier.", exc_info=True)
+        return {"is_real_estate_query": _is_domain_query(query), "reject_reason": "heuristic_fallback"}
 
 
 async def _rewrite_query_node(state: RAGState) -> RAGState:
@@ -366,9 +370,13 @@ async def _rewrite_query_node(state: RAGState) -> RAGState:
             ("human", "Original query: {query}"),
         ]
     )
-    llm = _chat_llm(state, temperature=0.0).with_structured_output(QueryRewrite)
-    rewritten = await (prompt | llm).ainvoke({"query": query})
-    return {"rewritten_query": rewritten.rewritten_query.strip() or query}
+    try:
+        llm = _chat_llm(state, temperature=0.0).with_structured_output(QueryRewrite)
+        rewritten = await (prompt | llm).ainvoke({"query": query})
+        return {"rewritten_query": rewritten.rewritten_query.strip() or query}
+    except Exception:
+        log.warning("Rewrite LLM failed; using raw query.", exc_info=True)
+        return {"rewritten_query": query}
 
 
 async def _retrieve_node(state: RAGState) -> RAGState:
@@ -400,10 +408,17 @@ async def _grade_documents_node(state: RAGState) -> RAGState:
 
     async def _grade_one(ctx: Dict[str, Any]) -> Dict[str, Any]:
         listing_json = json.dumps(ctx.get("metadata", {}), ensure_ascii=False)
-        grade = await (prompt | llm).ainvoke({"query": query, "listing_json": listing_json})
         merged = dict(ctx)
-        merged["relevance_score"] = int(grade.score)
-        merged["relevance_reason"] = grade.reason
+        try:
+            grade = await (prompt | llm).ainvoke({"query": query, "listing_json": listing_json})
+            merged["relevance_score"] = int(grade.score)
+            merged["relevance_reason"] = grade.reason
+        except Exception:
+            lowered_query = (query or "").lower()
+            lowered_listing = listing_json.lower()
+            heuristic = 5 + sum(1 for token in re.split(r"\W+", lowered_query) if token and token in lowered_listing)
+            merged["relevance_score"] = max(1, min(10, heuristic))
+            merged["relevance_reason"] = "heuristic_fallback"
         return merged
 
     graded = await asyncio.gather(*[_grade_one(ctx) for ctx in contexts])
@@ -444,9 +459,18 @@ async def _generate_node(state: RAGState) -> RAGState:
             ("human", "User query: {query}\n\nContext snippets:\n{snippets}"),
         ]
     )
-    llm = _chat_llm(state).with_structured_output(FinalAnswer)
-    result = await (prompt | llm).ainvoke({"query": query, "memory": memory or "None", "snippets": "\n".join(snippet_blocks)})
-    return {"final": result.model_dump()}
+    try:
+        llm = _chat_llm(state).with_structured_output(FinalAnswer)
+        result = await (prompt | llm).ainvoke({"query": query, "memory": memory or "None", "snippets": "\n".join(snippet_blocks)})
+        return {"final": result.model_dump()}
+    except Exception:
+        log.warning("Generate LLM failed; returning deterministic fallback summary.", exc_info=True)
+        top_ids = [int(item.get("id")) for item in graded_contexts[:3] if item.get("id")]
+        if top_ids:
+            answer = "I found relevant listings from your uploaded chats. Top matches: " + ", ".join(f"#{lid}" for lid in top_ids)
+        else:
+            answer = "I couldn't find enough listing evidence to answer that reliably."
+        return {"final": {"answer": answer, "has_relevant_data": bool(top_ids), "sources": top_ids}}
 
 
 async def _fallback_node(state: RAGState) -> RAGState:
