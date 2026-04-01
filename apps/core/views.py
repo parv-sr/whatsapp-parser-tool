@@ -12,7 +12,7 @@ from apps.core.utils.html_sanitiser import clean_html
 from apps.preprocessing.models import ListingChunk
 
 from .models import ChatMessage
-from .rag_graph import get_recent_messages_text, run_rag
+from .rag_graph import get_recent_messages_text, run_rag, stream_rag_events
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ async def chat_query(request: HttpRequest):
 
 
 @login_required
-def chat_stream(request: HttpRequest):
+async def chat_stream(request: HttpRequest):
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 
