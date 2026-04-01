@@ -77,6 +77,71 @@ class RAGState(TypedDict, total=False):
     sources: List[Dict[str, Any]]
 
 
+def _escape_html(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def _build_html_table_rows(rows: List[Dict[str, Any]]) -> str:
+    rendered: List[str] = []
+    for item in rows:
+        meta = _with_metadata_defaults(item.get("metadata") or {})
+        rendered.append(
+            "<tr>"
+            f"<td>{_escape_html(item.get('id', ''))}</td>"
+            f"<td>{_escape_html(meta.get('transaction_type', 'Not specified'))}</td>"
+            f"<td>{_escape_html(meta.get('property_type', 'Not specified'))}</td>"
+            f"<td>{_escape_html(meta.get('location', 'Not specified'))}</td>"
+            f"<td>{_escape_html(meta.get('building_name', 'Not specified'))}</td>"
+            f"<td>{_escape_html(meta.get('bhk', 'Not specified'))}</td>"
+            f"<td>{_escape_html(meta.get('sqft', 'Not specified'))}</td>"
+            f"<td>{_escape_html(meta.get('price', 'Not specified'))}</td>"
+            "</tr>"
+        )
+    return "".join(rendered)
+
+
+def _compose_answer_html(state: RAGState, final_text: str, source_ids: List[int]) -> str:
+    contexts = state.get("graded_contexts") or state.get("contexts") or []
+    source_set = set(source_ids or [])
+    rows = [ctx for ctx in contexts if ctx.get("id") in source_set]
+    if not rows:
+        rows = contexts[: min(8, len(contexts))]
+    rows = rows[:8]
+
+    top_matches = []
+    for idx, row in enumerate(rows[:3], start=1):
+        meta = _with_metadata_defaults(row.get("metadata") or {})
+        top_matches.append(
+            f"<li><strong>Listing ID: {_escape_html(row.get('id'))}</strong> - "
+            f"{_escape_html(meta.get('bhk', 'Not specified'))}, "
+            f"{_escape_html(meta.get('location', 'Not specified'))}, "
+            f"{_escape_html(meta.get('transaction_type', 'Not specified'))}.</li>"
+        )
+
+    intro_text = final_text or "Here are the best matches I found in your uploaded WhatsApp listings."
+    table_html = (
+        "<h4>Details</h4>"
+        "<table><thead><tr>"
+        "<th>ID</th><th>Transaction</th><th>Property</th><th>Location</th>"
+        "<th>Building</th><th>BHK</th><th>SQFT</th><th>Price</th>"
+        "</tr></thead><tbody>"
+        f"{_build_html_table_rows(rows)}"
+        "</tbody></table>"
+    )
+    if not rows:
+        table_html = "<p><em>No listing rows available yet. Try broadening your query.</em></p>"
+
+    top_html = f"<h4>Top Matches</h4><ol>{''.join(top_matches)}</ol>" if top_matches else ""
+    return f"<p>{_escape_html(intro_text)}</p>{top_html}{table_html}"
+
+
 def _build_messages(query: str, contexts: List[Dict[str, Any]], memory: str = "") -> List[Dict[str, str]]:
     """
     Backward-compatible helper kept for tests and diagnostics.
@@ -513,10 +578,11 @@ async def _fallback_node(state: RAGState) -> RAGState:
 
 async def _format_output_node(state: RAGState) -> RAGState:
     final = state.get("final") or {}
-    answer = (final.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
-    source_ids = set(final.get("sources") or [])
+    answer_text = (final.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
+    source_ids = [int(s) for s in (final.get("sources") or []) if str(s).isdigit()]
     contexts = state.get("graded_contexts") or state.get("contexts") or []
-    sources = [ctx for ctx in contexts if ctx.get("id") in source_ids]
+    sources = [ctx for ctx in contexts if ctx.get("id") in set(source_ids)]
+    answer = _compose_answer_html(state, answer_text, source_ids)
     return {"answer": answer, "sources": sources}
 
 
@@ -624,14 +690,6 @@ async def stream_rag_events(
         workflow = GRAPH_DEFINITION.compile(checkpointer=checkpointer) if checkpointer else RAG_WORKFLOW
         final_state: Dict[str, Any] = {}
         async for event in workflow.astream_events(state, config=config, version="v2"):
-            if event.get("event") == "on_chat_model_stream":
-                chunk = event.get("data", {}).get("chunk")
-                delta = getattr(chunk, "content", "") if chunk else ""
-                if isinstance(delta, list):
-                    delta = "".join(part.get("text", "") for part in delta if isinstance(part, dict))
-                if delta:
-                    yield {"type": "token", "delta": delta}
-
             if event.get("event") == "on_chain_end" and event.get("name") == "format_output":
                 maybe_state = event.get("data", {}).get("output") or {}
                 if isinstance(maybe_state, dict):
@@ -642,6 +700,10 @@ async def stream_rag_events(
 
         answer = (final_state.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
         sources = final_state.get("sources") or []
+        if answer:
+            chunk_size = 120
+            for i in range(0, len(answer), chunk_size):
+                yield {"type": "token", "delta": answer[i : i + chunk_size]}
         yield {"type": "final", "answer": answer, "sources": sources, "model": _safe_model(model)}
 
 
