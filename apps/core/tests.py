@@ -4,8 +4,11 @@ from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.urls import reverse
 
+from apps.core.models import ChatMessage
 from apps.core import rag_graph
 
 
@@ -42,3 +45,32 @@ class RagGraphUnitTests(TestCase):
             state = asyncio.run(rag_graph.run_rag("3bhk apartment in bkc", top_k=5))
 
         self.assertIn("couldn't find an exact match", state["answer"].lower())
+
+
+class ChatStreamTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="stream-user", password="testpass123")
+        self.client.force_login(self.user)
+
+    def test_chat_stream_works_in_sync_client_and_keeps_ndjson_framing(self):
+        with (
+            patch("apps.core.views.get_recent_messages_text", new=AsyncMock(return_value="")),
+            patch(
+                "apps.core.views.run_rag",
+                new=AsyncMock(return_value={"answer": "Hello there", "sources": [{"id": 1}], "model": "gpt-4o-mini"}),
+            ),
+        ):
+            response = self.client.post(
+                reverse("core:chat_stream"),
+                data='{"query":"Hi"}',
+                content_type="application/json",
+            )
+            chunks = [c.decode("utf-8") for c in response.streaming_content]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/x-ndjson")
+        self.assertEqual(chunks[0], '{"type": "token", "delta": "Hello there"}\n')
+        self.assertEqual(chunks[1], '{"type": "done", "model": "gpt-4o-mini", "sources": [{"id": 1}]}\n')
+
+        messages = list(ChatMessage.objects.filter(user=self.user).values_list("role", "content"))
+        self.assertEqual(messages, [("user", "Hi"), ("assistant", "Hello there")])
