@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 DEFAULT_TOP_K = 8
 CHAT_MODEL = getattr(settings, "CHAT_MODEL", "gpt-4o-mini")
 ALLOWED_CHAT_MODELS = getattr(settings, "OPENAI_CHAT_MODELS", ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"])
+ENABLE_LLM_GRADING = bool(getattr(settings, "RAG_ENABLE_LLM_GRADING", True))
 
 REAL_ESTATE_TERMS = {
     "office", "shop", "villa", "bhk", "sqft", "carpet", "price", "budget", "listing", "ownership", "commercial",
@@ -36,6 +37,11 @@ REAL_ESTATE_TERMS = {
 OWNERSHIP_TERMS = {"buy", "sale", "sell", "ownership", "own", "purchase", "resale"}
 LEASE_TERMS = {"lease", "leave and license", "l&l", "license"}
 RENT_TERMS = {"rent", "rental", "tenant", "let out"}
+STOPWORDS = {"the", "in", "at", "for", "with", "and", "or", "to", "of", "a", "an", "near"}
+MUST_HAVE_FEATURE_TERMS = {
+    "parking", "lift", "elevator", "furnished", "semi-furnished", "unfurnished", "balcony", "terrace",
+    "pool", "gym", "garden", "corner", "vaastu", "vastu", "pet-friendly", "pet", "servant", "duplex",
+}
 
 
 class RealEstateClassifier(BaseModel):
@@ -63,6 +69,7 @@ class RAGState(TypedDict, total=False):
     top_k: int
     model: str
     temperature: float
+    use_llm_grading: bool
     memory: str
     thread_id: str
     is_real_estate_query: bool
@@ -256,6 +263,97 @@ def _extract_query_preferences(query: str) -> Dict[str, str]:
     return prefs
 
 
+def _query_tokens(query: str) -> List[str]:
+    return [
+        token for token in re.split(r"\W+", (query or "").lower())
+        if len(token) > 2 and token not in STOPWORDS
+    ]
+
+
+def _extract_must_have_terms(query: str) -> set[str]:
+    tokens = set(_query_tokens(query))
+    return {token for token in tokens if token in MUST_HAVE_FEATURE_TERMS}
+
+
+def _load_listing_briefs(listing_ids: List[int]) -> Dict[int, ListingChunk]:
+    return {
+        l.id: l
+        for l in ListingChunk.objects.filter(id__in=listing_ids).only(
+            "id", "transaction_type", "category", "metadata"
+        )
+    }
+
+
+def _deterministic_rerank(
+    query: str,
+    fused_scores: Dict[int, float],
+    rank_data: Dict[int, Dict[str, Any]],
+    top_k: int,
+) -> List[Dict[str, Any]]:
+    listing_ids = list(fused_scores.keys())
+    listing_map = _load_listing_briefs(listing_ids)
+    prefs = _extract_query_preferences(query)
+    query_token_set = set(_query_tokens(query))
+    must_have_terms = _extract_must_have_terms(query)
+
+    scored_rows: List[Dict[str, Any]] = []
+    for lid in listing_ids:
+        listing = listing_map.get(lid)
+        if not listing:
+            continue
+
+        metadata = _with_metadata_defaults(listing.metadata or {})
+        location_tokens = set(_query_tokens(str(metadata.get("location", ""))))
+        feature_values = " ".join(
+            [
+                str(metadata.get("furnishing", "")),
+                str(metadata.get("parking", "")),
+                str(metadata.get("building_name", "")),
+                " ".join(str(item) for item in (metadata.get("features") or [])),
+            ]
+        ).lower()
+
+        transaction_match = 1.0 if prefs.get("transaction_type") and listing.transaction_type == prefs["transaction_type"] else 0.0
+        property_match = 1.0 if prefs.get("property_type") and listing.category == prefs["property_type"] else 0.0
+        token_overlap = (len(query_token_set & location_tokens) / max(1, len(query_token_set))) if query_token_set else 0.0
+        must_have_match = (
+            sum(1 for term in must_have_terms if term in feature_values) / max(1, len(must_have_terms))
+            if must_have_terms else 0.0
+        )
+
+        weighted = (
+            transaction_match * 0.35
+            + property_match * 0.25
+            + token_overlap * 0.25
+            + must_have_match * 0.15
+        )
+        deterministic_score = weighted + (float(fused_scores.get(lid, 0.0)) * 0.20)
+        scored_rows.append(
+            {
+                "listing_chunk_id": lid,
+                **rank_data.get(lid, {}),
+                "hybrid_score": fused_scores.get(lid, 0.0),
+                "deterministic_score": deterministic_score,
+                "feature_scores": {
+                    "transaction_match": transaction_match,
+                    "property_match": property_match,
+                    "location_overlap": token_overlap,
+                    "must_have_match": must_have_match,
+                },
+            }
+        )
+
+    scored_rows.sort(
+        key=lambda row: (
+            row.get("deterministic_score", 0.0),
+            row.get("hybrid_score", 0.0),
+            row.get("listing_chunk_id", 0),
+        ),
+        reverse=True,
+    )
+    return scored_rows[:top_k]
+
+
 def _fetch_top_k_by_vector(query: str, filters: Dict[str, Any], top_k: int) -> List[Dict[str, Any]]:
     vectorstore = get_vectorstore()
     pg_filter = build_pg_filter(filters)
@@ -330,14 +428,13 @@ def _fetch_top_k_by_keyword(query: str, top_k: int) -> List[Dict[str, Any]]:
 
 
 def _hybrid_retrieve(query: str, top_k: int) -> List[Dict[str, Any]]:
-    candidate_pool = max(32, top_k * 5)
+    candidate_pool = max(48, top_k * 8)
     filters = _extract_filters(query)
     vec_hits = _fetch_top_k_by_vector(query, filters=filters, top_k=candidate_pool)
     kw_hits = _fetch_top_k_by_keyword(query, top_k=candidate_pool)
 
     fused_scores: Dict[int, float] = defaultdict(float)
     rank_data: Dict[int, Dict[str, Any]] = {}
-    prefs = _extract_query_preferences(query)
     max_kw = max((item.get("keyword_score", 0.0) for item in kw_hits), default=0.0)
 
     for rank, item in enumerate(vec_hits, start=1):
@@ -354,23 +451,7 @@ def _hybrid_retrieve(query: str, top_k: int) -> List[Dict[str, Any]]:
             fused_scores[lid] += normalized_kw * 0.3
             rank_data[lid] = {**rank_data.get(lid, {}), **item}
 
-    listing_ids = list(fused_scores.keys())
-    listing_map = {l.id: l for l in ListingChunk.objects.filter(id__in=listing_ids).only("id", "transaction_type", "category")}
-
-    for lid in listing_ids:
-        listing = listing_map.get(lid)
-        if not listing:
-            continue
-        if prefs.get("transaction_type") and listing.transaction_type == prefs["transaction_type"]:
-            fused_scores[lid] += 0.2
-        pref = prefs.get("property_type")
-        if pref == "COMMERCIAL" and listing.category == "COMMERCIAL":
-            fused_scores[lid] += 0.15
-        if pref == "RESIDENTIAL" and listing.category == "RESIDENTIAL":
-            fused_scores[lid] += 0.15
-
-    ranked_ids = [lid for lid, _ in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]]
-    return [{"listing_chunk_id": lid, **rank_data.get(lid, {}), "hybrid_score": fused_scores[lid]} for lid in ranked_ids]
+    return _deterministic_rerank(query=query, fused_scores=fused_scores, rank_data=rank_data, top_k=top_k)
 
 
 async def _hybrid_retrieve_async(query: str, top_k: int) -> List[Dict[str, Any]]:
@@ -469,31 +550,45 @@ async def _grade_documents_node(state: RAGState) -> RAGState:
     if not contexts:
         return {"graded_contexts": []}
 
+    llm_grading_enabled = bool(state.get("use_llm_grading", ENABLE_LLM_GRADING))
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", "Score relevance of a listing chunk to a real-estate query from 1-10."),
             ("human", "Query: {query}\nListing JSON: {listing_json}"),
         ]
     )
-    llm = _chat_llm(state, temperature=0.0).with_structured_output(DocumentGrade)
+    llm = _chat_llm(state, temperature=0.0).with_structured_output(DocumentGrade) if llm_grading_enabled else None
 
     async def _grade_one(ctx: Dict[str, Any]) -> Dict[str, Any]:
         listing_json = json.dumps(ctx.get("metadata", {}), ensure_ascii=False)
         merged = dict(ctx)
+        deterministic_score = float(merged.get("deterministic_score", merged.get("hybrid_score", 0.0)))
+        deterministic_grade = max(1, min(10, int(round(deterministic_score * 10))))
+        merged["deterministic_relevance_score"] = deterministic_grade
         try:
-            grade = await (prompt | llm).ainvoke({"query": query, "listing_json": listing_json})
-            merged["relevance_score"] = int(grade.score)
-            merged["relevance_reason"] = grade.reason
+            if llm:
+                grade = await (prompt | llm).ainvoke({"query": query, "listing_json": listing_json})
+                llm_score = int(grade.score)
+                merged["llm_relevance_score"] = llm_score
+                merged["relevance_score"] = max(1, min(10, int(round(deterministic_grade * 0.7 + llm_score * 0.3))))
+                merged["relevance_reason"] = grade.reason or "llm_plus_deterministic"
+            else:
+                merged["relevance_score"] = deterministic_grade
+                merged["relevance_reason"] = "deterministic_only"
         except Exception:
-            lowered_query = (query or "").lower()
-            lowered_listing = listing_json.lower()
-            heuristic = 5 + sum(1 for token in re.split(r"\W+", lowered_query) if token and token in lowered_listing)
-            merged["relevance_score"] = max(1, min(10, heuristic))
-            merged["relevance_reason"] = "heuristic_fallback"
+            merged["relevance_score"] = deterministic_grade
+            merged["relevance_reason"] = "deterministic_fallback"
         return merged
 
     graded = await asyncio.gather(*[_grade_one(ctx) for ctx in contexts])
-    graded.sort(key=lambda x: (x.get("relevance_score", 0), x.get("hybrid_score", 0.0)), reverse=True)
+    graded.sort(
+        key=lambda x: (
+            x.get("relevance_score", 0),
+            x.get("deterministic_score", x.get("hybrid_score", 0.0)),
+            x.get("hybrid_score", 0.0),
+        ),
+        reverse=True,
+    )
     return {"graded_contexts": graded}
 
 
