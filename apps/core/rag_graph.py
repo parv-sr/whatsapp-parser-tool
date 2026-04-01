@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from functools import lru_cache
+import sys
 from typing import Any, AsyncIterator, Dict, List, Optional, TypedDict
 
 from asgiref.sync import sync_to_async
@@ -597,26 +598,68 @@ def _checkpoint_dsn() -> Optional[str]:
     )
 
 
+@lru_cache(maxsize=1)
+def _checkpoint_backend_config() -> Dict[str, str]:
+    dsn = _checkpoint_dsn()
+    backend = "none"
+    reason = "No checkpoint DSN configured."
+
+    if not dsn:
+        pass
+    elif sys.platform == "win32":
+        backend = "memory"
+        reason = "Windows runtime detected; skipping async PostgresSaver and using in-memory saver."
+    else:
+        backend = "postgres"
+        reason = "Using async PostgresSaver backend."
+
+    log.info("Checkpoint backend selected: %s (%s)", backend, reason)
+    return {"backend": backend, "reason": reason}
+
+
 @asynccontextmanager
 async def _checkpointer_context():
+    config = _checkpoint_backend_config()
+    backend = config["backend"]
+
+    if backend == "none":
+        yield None
+        return
+
+    if backend == "memory":
+        from langgraph.checkpoint.memory import MemorySaver
+
+        yield MemorySaver()
+        return
+
     dsn = _checkpoint_dsn()
     if not dsn:
         yield None
         return
 
+    if sys.platform == "win32" and isinstance(asyncio.get_running_loop(), asyncio.ProactorEventLoop):
+        from langgraph.checkpoint.memory import MemorySaver
+
+        yield MemorySaver()
+        return
+
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     except ModuleNotFoundError:
-        log.info("LangGraph postgres checkpoint package unavailable; running without checkpointer.")
-        yield None
+        log.info("LangGraph postgres checkpoint package unavailable; using in-memory saver.")
+        from langgraph.checkpoint.memory import MemorySaver
+
+        yield MemorySaver()
         return
 
     try:
         async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer:
             yield checkpointer
     except Exception as exc:
-        log.warning("Falling back to graph without Postgres checkpointer: %s", exc)
-        yield None
+        log.warning("Falling back to in-memory checkpointer after PostgresSaver failure: %s", exc)
+        from langgraph.checkpoint.memory import MemorySaver
+
+        yield MemorySaver()
 
 
 def _build_graph_definition():
