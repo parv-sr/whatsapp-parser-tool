@@ -84,7 +84,6 @@ def _escape_html(value: Any) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
         .replace('"', "&quot;")
-        .replace("'", "&#39;")
     )
 
 
@@ -419,8 +418,8 @@ async def _classify_query_node(state: RAGState) -> RAGState:
         llm = _chat_llm(state, temperature=0.0).with_structured_output(RealEstateClassifier)
         result = await (prompt | llm).ainvoke({"query": query})
         return {"is_real_estate_query": bool(result.is_real_estate_query), "reject_reason": result.reason}
-    except Exception:
-        log.warning("Classifier LLM failed; falling back to heuristic classifier.", exc_info=True)
+    except Exception as exc:
+        log.warning("Classifier LLM failed; falling back to heuristic classifier: %s", exc)
         return {"is_real_estate_query": _is_domain_query(query), "reject_reason": "heuristic_fallback"}
 
 
@@ -440,8 +439,8 @@ async def _rewrite_query_node(state: RAGState) -> RAGState:
         llm = _chat_llm(state, temperature=0.0).with_structured_output(QueryRewrite)
         rewritten = await (prompt | llm).ainvoke({"query": query})
         return {"rewritten_query": rewritten.rewritten_query.strip() or query}
-    except Exception:
-        log.warning("Rewrite LLM failed; using raw query.", exc_info=True)
+    except Exception as exc:
+        log.warning("Rewrite LLM failed; using raw query: %s", exc)
         return {"rewritten_query": query}
 
 
@@ -535,8 +534,8 @@ async def _generate_node(state: RAGState) -> RAGState:
         llm = _chat_llm(state).with_structured_output(FinalAnswer)
         result = await (prompt | llm).ainvoke({"query": query, "memory": memory or "None", "snippets": "\n".join(snippet_blocks)})
         return {"final": result.model_dump()}
-    except Exception:
-        log.warning("Generate LLM failed; returning deterministic fallback summary.", exc_info=True)
+    except Exception as exc:
+        log.warning("Generate LLM failed; returning deterministic fallback summary: %s", exc)
         top_ids = [int(item.get("id")) for item in graded_contexts[:3] if item.get("id")]
         if top_ids:
             answer = "I found relevant listings from your uploaded chats. Top matches: " + ", ".join(f"#{lid}" for lid in top_ids)
@@ -615,8 +614,8 @@ async def _checkpointer_context():
     try:
         async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer:
             yield checkpointer
-    except Exception:
-        log.exception("Falling back to graph without Postgres checkpointer")
+    except Exception as exc:
+        log.warning("Falling back to graph without Postgres checkpointer: %s", exc)
         yield None
 
 
