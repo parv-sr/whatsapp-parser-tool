@@ -36,7 +36,7 @@ BATCH_SIZE = 1000
 NUM_CORES = multiprocessing.cpu_count()
 
 LLM_BATCH_SIZE = 60
-MAX_WORKERS = 4
+MAX_WORKERS = max(4, int(os.getenv("INGESTION_MAX_WORKERS", "6")))
 VECTOR_DEDUPE_DISTANCE_THRESHOLD = 0.05
 RUNTIME_LOG_LIMIT = 150
 
@@ -105,6 +105,17 @@ def _generate_dedupe_hash(
     norm_transaction = re.sub(r"\s+", "", (transaction_type or "")).lower()
     norm_intent = re.sub(r"\s+", "", (listing_intent or "")).lower()
     raw_key = f"{norm_text}|{norm_sender}|{norm_location}|{norm_transaction}|{norm_intent}"
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+
+def _generate_legacy_dedupe_hash(cleaned_text: str, sender: str) -> str:
+    """
+    Backward-compatible dedupe hash used by older rows/tests:
+    hash(normalized_text + normalized_sender).
+    """
+    norm_text = re.sub(r"\s+", "", (cleaned_text or "")).lower()
+    norm_sender = re.sub(r"\s+", "", (sender or "")).lower()
+    raw_key = f"{norm_text}|{norm_sender}"
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
@@ -243,6 +254,7 @@ def process_single_llm_batch(batch_data):
                     listing_data.transaction_type,
                     listing_data.listing_intent,
                 )
+                legacy_hash = _generate_legacy_dedupe_hash(text_for_hash, chunk.sender)
 
                 # 2) in-batch dedupe
                 if composite_hash in batch_seen_hashes:
@@ -251,7 +263,7 @@ def process_single_llm_batch(batch_data):
                 batch_seen_hashes.add(composite_hash)
 
                 # 3) in-db dedupe
-                if ListingChunk.objects.filter(composite_hash=composite_hash).exists():
+                if ListingChunk.objects.filter(composite_hash__in=[composite_hash, legacy_hash]).exists():
                     tracker.add_in_db(composite_hash)
                     continue
 
