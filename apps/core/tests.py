@@ -53,14 +53,12 @@ class ChatStreamTests(TestCase):
         self.client.force_login(self.user)
 
     def test_chat_stream_works_in_sync_client_and_keeps_ndjson_framing(self):
-        async def fake_stream_rag_events(**kwargs):
-            yield {"type": "token", "delta": "Hello "}
-            yield {"type": "token", "delta": "there"}
-            yield {"type": "final", "sources": [{"id": 1}], "model": "gpt-4o-mini"}
-
         with (
             patch("apps.core.views.get_recent_messages_text", new=AsyncMock(return_value="")),
-            patch("apps.core.views.stream_rag_events", side_effect=fake_stream_rag_events),
+            patch(
+                "apps.core.views.run_rag",
+                new=AsyncMock(return_value={"answer": "Hello there", "sources": [{"id": 1}], "model": "gpt-4o-mini"}),
+            ),
         ):
             response = self.client.post(
                 reverse("core:chat_stream"),
@@ -71,9 +69,8 @@ class ChatStreamTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/x-ndjson")
-        self.assertEqual(chunks[0], '{"type": "token", "delta": "Hello "}\n')
-        self.assertEqual(chunks[1], '{"type": "token", "delta": "there"}\n')
-        self.assertEqual(chunks[2], '{"type": "done", "model": "gpt-4o-mini", "sources": [{"id": 1}]}\n')
+        self.assertEqual(chunks[0], '{"type": "token", "delta": "Hello there"}\n')
+        self.assertEqual(chunks[1], '{"type": "done", "model": "gpt-4o-mini", "sources": [{"id": 1}]}\n')
 
         messages = list(ChatMessage.objects.filter(user=self.user).values_list("role", "content"))
         self.assertEqual(messages, [("user", "Hi"), ("assistant", "Hello there")])
