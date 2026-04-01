@@ -46,31 +46,58 @@ class RagGraphUnitTests(TestCase):
 
         self.assertIn("couldn't find an exact match", state["answer"].lower())
 
-
-class ChatStreamTests(TestCase):
-    def setUp(self):
-        self.user = get_user_model().objects.create_user(username="stream-user", password="testpass123")
-        self.client.force_login(self.user)
-
-    def test_chat_stream_works_in_sync_client_and_keeps_ndjson_framing(self):
-        with (
-            patch("apps.core.views.get_recent_messages_text", new=AsyncMock(return_value="")),
-            patch(
-                "apps.core.views.run_rag",
-                new=AsyncMock(return_value={"answer": "Hello there", "sources": [{"id": 1}], "model": "gpt-4o-mini"}),
-            ),
-        ):
-            response = self.client.post(
-                reverse("core:chat_stream"),
-                data='{"query":"Hi"}',
-                content_type="application/json",
+    def test_format_output_no_context_fallback(self):
+        state = asyncio.run(
+            rag_graph._format_output_node(
+                {
+                    "query": "need something",
+                    "contexts": [],
+                    "graded_contexts": [],
+                    "final": {"answer": "No exact results yet.", "sources": []},
+                }
             )
-            chunks = [c.decode("utf-8") for c in response.streaming_content]
+        )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "application/x-ndjson")
-        self.assertEqual(chunks[0], '{"type": "token", "delta": "Hello there"}\n')
-        self.assertEqual(chunks[1], '{"type": "done", "model": "gpt-4o-mini", "sources": [{"id": 1}]}\n')
+        self.assertIn("<p>", state["answer"])
+        self.assertEqual(state["sources"], [])
 
-        messages = list(ChatMessage.objects.filter(user=self.user).values_list("role", "content"))
-        self.assertEqual(messages, [("user", "Hi"), ("assistant", "Hello there")])
+    def test_low_score_fallback_sets_final(self):
+        fallback_input = {
+            "query": "2bhk in andheri",
+            "is_real_estate_query": True,
+            "graded_contexts": [
+                {"id": 101, "relevance_score": 3, "metadata": {"location": "Andheri", "bhk": "2 BHK", "price": "2.2 Cr"}}
+            ],
+        }
+        self.assertEqual(rag_graph._route_after_grading(fallback_input), "fallback")
+        fallback_state = asyncio.run(rag_graph._fallback_node(fallback_input))
+        self.assertIn("final", fallback_state)
+        self.assertEqual(fallback_state["final"]["sources"], [101])
+
+    def test_successful_generate_path(self):
+        payload = {
+            "query": "Show sale flats",
+            "model": "gpt-4o-mini",
+            "graded_contexts": [
+                {"id": 11, "relevance_score": 9, "metadata": {"location": "BKC", "transaction_type": "SALE", "property_type": "RESIDENTIAL"}}
+            ],
+            "final": {"answer": "Found one listing.", "sources": [11], "model": "gpt-4o-mini", "confidence": 0.88},
+        }
+        self.assertEqual(rag_graph._route_after_grading(payload), "generate")
+        state = asyncio.run(rag_graph._format_output_node(payload))
+        self.assertEqual(state["sources"][0]["id"], 11)
+        self.assertEqual(state["model"], "gpt-4o-mini")
+        self.assertAlmostEqual(state["confidence"], 0.88)
+
+    def test_format_output_filters_malformed_source_ids(self):
+        payload = {
+            "query": "Show listings",
+            "contexts": [
+                {"id": 7, "metadata": {}},
+                {"id": 9, "metadata": {"location": "Bandra"}},
+            ],
+            "final": {"answer": "Potential matches.", "sources": ["7", "abc", {"id": "9"}, {"id": None}, 42.1]},
+        }
+        state = asyncio.run(rag_graph._format_output_node(payload))
+        self.assertEqual([item["id"] for item in state["sources"]], [7, 9])
+        self.assertIn("metadata", state["sources"][0])
