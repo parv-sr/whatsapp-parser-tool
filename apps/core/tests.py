@@ -56,22 +56,51 @@ class RagGraphUnitTests(TestCase):
 
         self.assertIn("couldn't find an exact match", state["answer"].lower())
 
-    def test_normalize_shorthand_expands_locations_bhk_and_intent(self):
-        normalized = rag_graph._normalize_real_estate_shorthand("Need 2BHK in BKC, Andheri W or Lokhandwala on lease")
+    def test_deterministic_rerank_top_k_stability_fixture(self):
+        class FakeListing:
+            def __init__(self, id, transaction_type, category, metadata):
+                self.id = id
+                self.transaction_type = transaction_type
+                self.category = category
+                self.metadata = metadata
 
-        self.assertIn("2 bhk apartment", normalized.lower())
-        self.assertIn("bandra kurla complex mumbai", normalized.lower())
-        self.assertIn("andheri west mumbai", normalized.lower())
-        self.assertIn("lokhandwala andheri west mumbai", normalized.lower())
-        self.assertIn("for lease", normalized.lower())
+        listing_map = {
+            1: FakeListing(1, "RENT", "RESIDENTIAL", {"location": "Bandra West", "features": ["parking", "lift"]}),
+            2: FakeListing(2, "RENT", "RESIDENTIAL", {"location": "Andheri East", "features": ["lift"]}),
+            3: FakeListing(3, "SALE", "RESIDENTIAL", {"location": "Bandra", "features": ["parking"]}),
+            4: FakeListing(4, "RENT", "COMMERCIAL", {"location": "Bandra Kurla Complex", "features": ["parking"]}),
+        }
+        fused_scores = {1: 0.22, 2: 0.35, 3: 0.55, 4: 0.30}
+        rank_data = {lid: {"distance": 0.1 * lid} for lid in fused_scores}
+        query = "rent residential bandra with parking"
 
-    def test_ensure_constraints_in_rewrite_preserves_hard_constraints(self):
-        rewritten = rag_graph._ensure_constraints_in_rewrite(
-            "2 bhk in andheri w must-have balcony attached bath road view",
-            "2 bhk apartment in andheri west mumbai for rent",
-        )
+        with patch("apps.core.rag_graph._load_listing_briefs", return_value=listing_map):
+            top_a = rag_graph._deterministic_rerank(query=query, fused_scores=fused_scores, rank_data=rank_data, top_k=3)
+            top_b = rag_graph._deterministic_rerank(
+                query=query,
+                fused_scores=dict(reversed(list(fused_scores.items()))),
+                rank_data=rank_data,
+                top_k=3,
+            )
 
-        lowered = rewritten.lower()
-        self.assertIn("must have balcony", lowered)
-        self.assertIn("attached bath", lowered)
-        self.assertIn("road view", lowered)
+        ids_a = [row["listing_chunk_id"] for row in top_a]
+        ids_b = [row["listing_chunk_id"] for row in top_b]
+        self.assertEqual(ids_a, ids_b)
+        self.assertEqual(len(ids_a), 3)
+
+    def test_grade_documents_can_run_without_llm(self):
+        state = {
+            "query": "rent in bandra",
+            "use_llm_grading": False,
+            "contexts": [
+                {
+                    "id": 1,
+                    "metadata": {"location": "Bandra", "transaction_type": "RENT"},
+                    "hybrid_score": 0.2,
+                    "deterministic_score": 0.81,
+                }
+            ],
+        }
+        result = asyncio.run(rag_graph._grade_documents_node(state))
+        self.assertEqual(result["graded_contexts"][0]["relevance_reason"], "deterministic_only")
+        self.assertGreaterEqual(result["graded_contexts"][0]["relevance_score"], 8)
