@@ -4,9 +4,12 @@ from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from pydantic import BaseModel
+from django.urls import reverse
 
+from apps.core.models import ChatMessage
 from apps.core import rag_graph
 
 
@@ -53,27 +56,58 @@ class RagGraphUnitTests(TestCase):
 
         self.assertIn("couldn't find an exact match", state["answer"].lower())
 
-    def test_to_plain_data_converts_nested_pydantic_values(self):
-        payload = {
-            "final": rag_graph.FinalAnswer(answer="ok", has_relevant_data=True, sources=[11]),
-            "grade": rag_graph.DocumentGrade(score=8, reason="good"),
-        }
-        normalized = rag_graph._to_plain_data(payload)
-        self.assertEqual(normalized["final"]["answer"], "ok")
-        self.assertEqual(normalized["grade"]["score"], 8)
-        self.assertFalse(self._has_pydantic_instance(normalized))
-
-    def test_run_rag_removes_pydantic_instances_from_graph_state(self):
-        class _FakeWorkflow:
-            async def ainvoke(self, *_args, **_kwargs):
-                return {
-                    "final": rag_graph.FinalAnswer(answer="done", has_relevant_data=True, sources=[22]),
-                    "graded_contexts": [{"grade": rag_graph.DocumentGrade(score=9, reason="fit")}],
+    def test_format_output_no_context_fallback(self):
+        state = asyncio.run(
+            rag_graph._format_output_node(
+                {
+                    "query": "need something",
+                    "contexts": [],
+                    "graded_contexts": [],
+                    "final": {"answer": "No exact results yet.", "sources": []},
                 }
+            )
+        )
 
-        with patch("apps.core.rag_graph.RAG_WORKFLOW", new=_FakeWorkflow()):
-            state = asyncio.run(rag_graph.run_rag("sample query"))
+        self.assertIn("<p>", state["answer"])
+        self.assertEqual(state["sources"], [])
 
-        self.assertEqual(state["final"]["answer"], "done")
-        self.assertEqual(state["graded_contexts"][0]["grade"]["score"], 9)
-        self.assertFalse(self._has_pydantic_instance(state))
+    def test_low_score_fallback_sets_final(self):
+        fallback_input = {
+            "query": "2bhk in andheri",
+            "is_real_estate_query": True,
+            "graded_contexts": [
+                {"id": 101, "relevance_score": 3, "metadata": {"location": "Andheri", "bhk": "2 BHK", "price": "2.2 Cr"}}
+            ],
+        }
+        self.assertEqual(rag_graph._route_after_grading(fallback_input), "fallback")
+        fallback_state = asyncio.run(rag_graph._fallback_node(fallback_input))
+        self.assertIn("final", fallback_state)
+        self.assertEqual(fallback_state["final"]["sources"], [101])
+
+    def test_successful_generate_path(self):
+        payload = {
+            "query": "Show sale flats",
+            "model": "gpt-4o-mini",
+            "graded_contexts": [
+                {"id": 11, "relevance_score": 9, "metadata": {"location": "BKC", "transaction_type": "SALE", "property_type": "RESIDENTIAL"}}
+            ],
+            "final": {"answer": "Found one listing.", "sources": [11], "model": "gpt-4o-mini", "confidence": 0.88},
+        }
+        self.assertEqual(rag_graph._route_after_grading(payload), "generate")
+        state = asyncio.run(rag_graph._format_output_node(payload))
+        self.assertEqual(state["sources"][0]["id"], 11)
+        self.assertEqual(state["model"], "gpt-4o-mini")
+        self.assertAlmostEqual(state["confidence"], 0.88)
+
+    def test_format_output_filters_malformed_source_ids(self):
+        payload = {
+            "query": "Show listings",
+            "contexts": [
+                {"id": 7, "metadata": {}},
+                {"id": 9, "metadata": {"location": "Bandra"}},
+            ],
+            "final": {"answer": "Potential matches.", "sources": ["7", "abc", {"id": "9"}, {"id": None}, 42.1]},
+        }
+        state = asyncio.run(rag_graph._format_output_node(payload))
+        self.assertEqual([item["id"] for item in state["sources"]], [7, 9])
+        self.assertIn("metadata", state["sources"][0])

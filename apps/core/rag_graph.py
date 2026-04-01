@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from functools import lru_cache
+import sys
 from typing import Any, AsyncIterator, Dict, List, Optional, TypedDict
 
 from asgiref.sync import sync_to_async
@@ -75,6 +76,8 @@ class RAGState(TypedDict, total=False):
     final: Dict[str, Any]
     answer: str
     sources: List[Dict[str, Any]]
+    model: str
+    confidence: float
 
 
 def _to_plain_data(value: Any) -> Any:
@@ -599,13 +602,56 @@ async def _fallback_node(state: RAGState) -> RAGState:
 
 
 async def _format_output_node(state: RAGState) -> RAGState:
-    final = state.get("final") or {}
+    final = state.get("final") if isinstance(state.get("final"), dict) else {}
+
+    if not final:
+        graded = state.get("graded_contexts") or []
+        fallback_ids = [int(ctx.get("id")) for ctx in graded[:3] if str(ctx.get("id", "")).isdigit()]
+        if fallback_ids:
+            final = {
+                "answer": "I couldn't find enough listing evidence to answer that reliably.",
+                "sources": fallback_ids,
+                "confidence": 0.0,
+            }
+        else:
+            final = {
+                "answer": "I couldn't find enough listing evidence to answer that reliably.",
+                "sources": [],
+                "confidence": 0.0,
+            }
+
     answer_text = (final.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
-    source_ids = [int(s) for s in (final.get("sources") or []) if str(s).isdigit()]
+    raw_sources = final.get("sources")
+    source_ids: List[int] = []
+    if isinstance(raw_sources, list):
+        for item in raw_sources:
+            candidate = item.get("id") if isinstance(item, dict) else item
+            if str(candidate).isdigit():
+                source_ids.append(int(candidate))
+
     contexts = state.get("graded_contexts") or state.get("contexts") or []
-    sources = [ctx for ctx in contexts if ctx.get("id") in set(source_ids)]
+    source_set = set(source_ids)
+    sources = []
+    for ctx in contexts:
+        if ctx.get("id") not in source_set:
+            continue
+        normalized = dict(ctx)
+        normalized["id"] = int(ctx.get("id"))
+        normalized["metadata"] = _with_metadata_defaults(ctx.get("metadata") or {})
+        sources.append(normalized)
+
     answer = _compose_answer_html(state, answer_text, source_ids)
-    return {"answer": answer, "sources": sources}
+    output: RAGState = {"answer": answer, "sources": sources}
+
+    model = final.get("model") or state.get("model")
+    if isinstance(model, str) and model:
+        output["model"] = _safe_model(model)
+
+    confidence = final.get("confidence")
+    if isinstance(confidence, (int, float)):
+        output["confidence"] = float(confidence)
+
+    return output
 
 
 @lru_cache(maxsize=1)
@@ -620,26 +666,68 @@ def _checkpoint_dsn() -> Optional[str]:
     )
 
 
+@lru_cache(maxsize=1)
+def _checkpoint_backend_config() -> Dict[str, str]:
+    dsn = _checkpoint_dsn()
+    backend = "none"
+    reason = "No checkpoint DSN configured."
+
+    if not dsn:
+        pass
+    elif sys.platform == "win32":
+        backend = "memory"
+        reason = "Windows runtime detected; skipping async PostgresSaver and using in-memory saver."
+    else:
+        backend = "postgres"
+        reason = "Using async PostgresSaver backend."
+
+    log.info("Checkpoint backend selected: %s (%s)", backend, reason)
+    return {"backend": backend, "reason": reason}
+
+
 @asynccontextmanager
 async def _checkpointer_context():
+    config = _checkpoint_backend_config()
+    backend = config["backend"]
+
+    if backend == "none":
+        yield None
+        return
+
+    if backend == "memory":
+        from langgraph.checkpoint.memory import MemorySaver
+
+        yield MemorySaver()
+        return
+
     dsn = _checkpoint_dsn()
     if not dsn:
         yield None
         return
 
+    if sys.platform == "win32" and isinstance(asyncio.get_running_loop(), asyncio.ProactorEventLoop):
+        from langgraph.checkpoint.memory import MemorySaver
+
+        yield MemorySaver()
+        return
+
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     except ModuleNotFoundError:
-        log.info("LangGraph postgres checkpoint package unavailable; running without checkpointer.")
-        yield None
+        log.info("LangGraph postgres checkpoint package unavailable; using in-memory saver.")
+        from langgraph.checkpoint.memory import MemorySaver
+
+        yield MemorySaver()
         return
 
     try:
         async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer:
             yield checkpointer
     except Exception as exc:
-        log.warning("Falling back to graph without Postgres checkpointer: %s", exc)
-        yield None
+        log.warning("Falling back to in-memory checkpointer after PostgresSaver failure: %s", exc)
+        from langgraph.checkpoint.memory import MemorySaver
+
+        yield MemorySaver()
 
 
 def _build_graph_definition():
