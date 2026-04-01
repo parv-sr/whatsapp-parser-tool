@@ -1,6 +1,6 @@
 import json
 import logging
-from asgiref.sync import async_to_sync, sync_to_async
+from asgiref.sync import sync_to_async
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
@@ -106,59 +106,78 @@ async def chat_stream(request: HttpRequest):
     selected_model = body.get("model") if body.get("model") in ALLOWED_CHAT_MODELS else CHAT_MODEL
 
     await sync_to_async(ChatMessage.objects.create)(user=request.user, role="user", content=query)
-    memory = await get_recent_messages_text(request.user, limit=6)
     thread_id = f"user-{request.user.id}"
-
-    async def stream_iter():
-        parts = []
-        final_sources = []
-        final_model = selected_model
-        try:
-            async for payload in stream_rag_events(
-                query=query,
-                top_k=top_k,
-                model=selected_model,
-                temperature=temperature,
-                memory=memory,
-                thread_id=thread_id,
-            ):
-                if payload.get("type") == "token":
-                    delta = payload.get("delta", "")
-                    if delta:
-                        parts.append(delta)
-                        yield json.dumps({"type": "token", "delta": delta}) + "\n"
-                elif payload.get("type") == "final":
-                    final_sources = payload.get("sources") or []
-                    final_model = payload.get("model") or selected_model
-                    if not parts and payload.get("answer"):
-                        answer_text = payload.get("answer")
-                        parts.append(answer_text)
-                        yield json.dumps({"type": "token", "delta": answer_text}) + "\n"
-        except Exception as e:
-            yield json.dumps({"type": "error", "message": f"Streaming error: {str(e)}"}) + "\n"
-        finally:
-            final_answer = "".join(parts).strip() or "I couldn't find enough listing evidence to answer that reliably."
-            try:
-                await sync_to_async(ChatMessage.objects.create)(user=request.user, role="assistant", content=final_answer)
-            except Exception:
-                log.exception("Failed to store streamed assistant message")
-            yield json.dumps({"type": "done", "model": final_model, "sources": final_sources}) + "\n"
-
     is_asgi_request = hasattr(request, "scope")
+    memory = await get_recent_messages_text(request.user, limit=6)
+
     if is_asgi_request:
+        async def stream_iter():
+            parts = []
+            final_sources = []
+            final_model = selected_model
+            try:
+                async for payload in stream_rag_events(
+                    query=query,
+                    top_k=top_k,
+                    model=selected_model,
+                    temperature=temperature,
+                    memory=memory,
+                    thread_id=thread_id,
+                ):
+                    if payload.get("type") == "token":
+                        delta = payload.get("delta", "")
+                        if delta:
+                            parts.append(delta)
+                            yield json.dumps({"type": "token", "delta": delta}) + "\n"
+                    elif payload.get("type") == "final":
+                        final_sources = payload.get("sources") or []
+                        final_model = payload.get("model") or selected_model
+                        if not parts and payload.get("answer"):
+                            answer_text = payload.get("answer")
+                            parts.append(answer_text)
+                            yield json.dumps({"type": "token", "delta": answer_text}) + "\n"
+            except Exception as e:
+                yield json.dumps({"type": "error", "message": f"Streaming error: {str(e)}"}) + "\n"
+            finally:
+                final_answer = "".join(parts).strip() or "I couldn't find enough listing evidence to answer that reliably."
+                try:
+                    await sync_to_async(ChatMessage.objects.create)(user=request.user, role="assistant", content=final_answer)
+                except Exception:
+                    log.exception("Failed to store streamed assistant message")
+                yield json.dumps({"type": "done", "model": final_model, "sources": final_sources}) + "\n"
+
         return StreamingHttpResponse(stream_iter(), content_type="application/x-ndjson")
 
-    async_iter = stream_iter()
+    try:
+        state = await run_rag(
+            query=query,
+            top_k=top_k,
+            model=selected_model,
+            temperature=temperature,
+            memory=memory,
+            thread_id=thread_id,
+        )
+        final_answer = (state.get("answer") or "").strip() or "I couldn't find enough listing evidence to answer that reliably."
+        final_sources = state.get("sources") or []
+        final_model = state.get("model") or selected_model
+    except Exception as e:
+        final_answer = "I couldn't find enough listing evidence to answer that reliably."
+        final_sources = []
+        final_model = selected_model
+        error_chunk = json.dumps({"type": "error", "message": f"Streaming error: {str(e)}"}) + "\n"
+    else:
+        error_chunk = None
+
+    try:
+        await sync_to_async(ChatMessage.objects.create)(user=request.user, role="assistant", content=final_answer)
+    except Exception:
+        log.exception("Failed to store streamed assistant message")
 
     def sync_stream_iter():
-        async def next_chunk():
-            return await async_iter.__anext__()
-
-        while True:
-            try:
-                yield async_to_sync(next_chunk)()
-            except StopAsyncIteration:
-                break
+        if error_chunk:
+            yield error_chunk
+        yield json.dumps({"type": "token", "delta": final_answer}) + "\n"
+        yield json.dumps({"type": "done", "model": final_model, "sources": final_sources}) + "\n"
 
     return StreamingHttpResponse(sync_stream_iter(), content_type="application/x-ndjson")
 
