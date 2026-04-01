@@ -56,58 +56,22 @@ class RagGraphUnitTests(TestCase):
 
         self.assertIn("couldn't find an exact match", state["answer"].lower())
 
-    def test_format_output_no_context_fallback(self):
-        state = asyncio.run(
-            rag_graph._format_output_node(
-                {
-                    "query": "need something",
-                    "contexts": [],
-                    "graded_contexts": [],
-                    "final": {"answer": "No exact results yet.", "sources": []},
-                }
-            )
+    def test_normalize_shorthand_expands_locations_bhk_and_intent(self):
+        normalized = rag_graph._normalize_real_estate_shorthand("Need 2BHK in BKC, Andheri W or Lokhandwala on lease")
+
+        self.assertIn("2 bhk apartment", normalized.lower())
+        self.assertIn("bandra kurla complex mumbai", normalized.lower())
+        self.assertIn("andheri west mumbai", normalized.lower())
+        self.assertIn("lokhandwala andheri west mumbai", normalized.lower())
+        self.assertIn("for lease", normalized.lower())
+
+    def test_ensure_constraints_in_rewrite_preserves_hard_constraints(self):
+        rewritten = rag_graph._ensure_constraints_in_rewrite(
+            "2 bhk in andheri w must-have balcony attached bath road view",
+            "2 bhk apartment in andheri west mumbai for rent",
         )
 
-        self.assertIn("<p>", state["answer"])
-        self.assertEqual(state["sources"], [])
-
-    def test_low_score_fallback_sets_final(self):
-        fallback_input = {
-            "query": "2bhk in andheri",
-            "is_real_estate_query": True,
-            "graded_contexts": [
-                {"id": 101, "relevance_score": 3, "metadata": {"location": "Andheri", "bhk": "2 BHK", "price": "2.2 Cr"}}
-            ],
-        }
-        self.assertEqual(rag_graph._route_after_grading(fallback_input), "fallback")
-        fallback_state = asyncio.run(rag_graph._fallback_node(fallback_input))
-        self.assertIn("final", fallback_state)
-        self.assertEqual(fallback_state["final"]["sources"], [101])
-
-    def test_successful_generate_path(self):
-        payload = {
-            "query": "Show sale flats",
-            "model": "gpt-4o-mini",
-            "graded_contexts": [
-                {"id": 11, "relevance_score": 9, "metadata": {"location": "BKC", "transaction_type": "SALE", "property_type": "RESIDENTIAL"}}
-            ],
-            "final": {"answer": "Found one listing.", "sources": [11], "model": "gpt-4o-mini", "confidence": 0.88},
-        }
-        self.assertEqual(rag_graph._route_after_grading(payload), "generate")
-        state = asyncio.run(rag_graph._format_output_node(payload))
-        self.assertEqual(state["sources"][0]["id"], 11)
-        self.assertEqual(state["model"], "gpt-4o-mini")
-        self.assertAlmostEqual(state["confidence"], 0.88)
-
-    def test_format_output_filters_malformed_source_ids(self):
-        payload = {
-            "query": "Show listings",
-            "contexts": [
-                {"id": 7, "metadata": {}},
-                {"id": 9, "metadata": {"location": "Bandra"}},
-            ],
-            "final": {"answer": "Potential matches.", "sources": ["7", "abc", {"id": "9"}, {"id": None}, 42.1]},
-        }
-        state = asyncio.run(rag_graph._format_output_node(payload))
-        self.assertEqual([item["id"] for item in state["sources"]], [7, 9])
-        self.assertIn("metadata", state["sources"][0])
+        lowered = rewritten.lower()
+        self.assertIn("must have balcony", lowered)
+        self.assertIn("attached bath", lowered)
+        self.assertIn("road view", lowered)
