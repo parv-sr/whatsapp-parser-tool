@@ -4,8 +4,11 @@ from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.urls import reverse
 
+from apps.core.models import ChatMessage
 from apps.core import rag_graph
 
 
