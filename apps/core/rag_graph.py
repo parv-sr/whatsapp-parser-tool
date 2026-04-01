@@ -77,6 +77,22 @@ class RAGState(TypedDict, total=False):
     sources: List[Dict[str, Any]]
 
 
+def _to_plain_data(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return {k: _to_plain_data(v) for k, v in value.model_dump().items()}
+    if isinstance(value, dict):
+        return {k: _to_plain_data(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_plain_data(v) for v in value]
+    return value
+
+
+async def _ainvoke_structured_output_plain(prompt: Any, llm: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
+    result = await (prompt | llm).ainvoke(payload)
+    plain = _to_plain_data(result)
+    return plain if isinstance(plain, dict) else {}
+
+
 def _escape_html(value: Any) -> str:
     text = "" if value is None else str(value)
     return (
@@ -416,8 +432,11 @@ async def _classify_query_node(state: RAGState) -> RAGState:
     )
     try:
         llm = _chat_llm(state, temperature=0.0).with_structured_output(RealEstateClassifier)
-        result = await (prompt | llm).ainvoke({"query": query})
-        return {"is_real_estate_query": bool(result.is_real_estate_query), "reject_reason": result.reason}
+        result = await _ainvoke_structured_output_plain(prompt, llm, {"query": query})
+        return {
+            "is_real_estate_query": bool(result.get("is_real_estate_query")),
+            "reject_reason": str(result.get("reason") or ""),
+        }
     except Exception as exc:
         log.warning("Classifier LLM failed; falling back to heuristic classifier: %s", exc)
         return {"is_real_estate_query": _is_domain_query(query), "reject_reason": "heuristic_fallback"}
@@ -437,8 +456,8 @@ async def _rewrite_query_node(state: RAGState) -> RAGState:
     )
     try:
         llm = _chat_llm(state, temperature=0.0).with_structured_output(QueryRewrite)
-        rewritten = await (prompt | llm).ainvoke({"query": query})
-        return {"rewritten_query": rewritten.rewritten_query.strip() or query}
+        rewritten = await _ainvoke_structured_output_plain(prompt, llm, {"query": query})
+        return {"rewritten_query": str(rewritten.get("rewritten_query") or "").strip() or query}
     except Exception as exc:
         log.warning("Rewrite LLM failed; using raw query: %s", exc)
         return {"rewritten_query": query}
@@ -481,9 +500,9 @@ async def _grade_documents_node(state: RAGState) -> RAGState:
         listing_json = json.dumps(ctx.get("metadata", {}), ensure_ascii=False)
         merged = dict(ctx)
         try:
-            grade = await (prompt | llm).ainvoke({"query": query, "listing_json": listing_json})
-            merged["relevance_score"] = int(grade.score)
-            merged["relevance_reason"] = grade.reason
+            grade = await _ainvoke_structured_output_plain(prompt, llm, {"query": query, "listing_json": listing_json})
+            merged["relevance_score"] = int(grade.get("score") or 0)
+            merged["relevance_reason"] = str(grade.get("reason") or "")
         except Exception:
             lowered_query = (query or "").lower()
             lowered_listing = listing_json.lower()
@@ -532,8 +551,12 @@ async def _generate_node(state: RAGState) -> RAGState:
     )
     try:
         llm = _chat_llm(state).with_structured_output(FinalAnswer)
-        result = await (prompt | llm).ainvoke({"query": query, "memory": memory or "None", "snippets": "\n".join(snippet_blocks)})
-        return {"final": result.model_dump()}
+        result = await _ainvoke_structured_output_plain(
+            prompt,
+            llm,
+            {"query": query, "memory": memory or "None", "snippets": "\n".join(snippet_blocks)},
+        )
+        return {"final": result}
     except Exception as exc:
         log.warning("Generate LLM failed; returning deterministic fallback summary: %s", exc)
         top_ids = [int(item.get("id")) for item in graded_contexts[:3] if item.get("id")]
@@ -664,7 +687,7 @@ async def run_rag(
     config = {"configurable": {"thread_id": thread_id}}
     async with _checkpointer_context() as checkpointer:
         workflow = GRAPH_DEFINITION.compile(checkpointer=checkpointer) if checkpointer else RAG_WORKFLOW
-        return await workflow.ainvoke(state, config=config)
+        return _to_plain_data(await workflow.ainvoke(state, config=config))
 
 
 async def stream_rag_events(
@@ -692,13 +715,13 @@ async def stream_rag_events(
             if event.get("event") == "on_chain_end" and event.get("name") == "format_output":
                 maybe_state = event.get("data", {}).get("output") or {}
                 if isinstance(maybe_state, dict):
-                    final_state = maybe_state
+                    final_state = _to_plain_data(maybe_state)
 
         if not final_state:
             final_state = await run_rag(query, top_k, model, temperature, memory, thread_id)
 
         answer = (final_state.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
-        sources = final_state.get("sources") or []
+        sources = _to_plain_data(final_state.get("sources") or [])
         if answer:
             chunk_size = 120
             for i in range(0, len(answer), chunk_size):

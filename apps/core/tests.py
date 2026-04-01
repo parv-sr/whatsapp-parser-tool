@@ -5,11 +5,21 @@ from unittest.mock import AsyncMock, patch
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from django.test import TestCase
+from pydantic import BaseModel
 
 from apps.core import rag_graph
 
 
 class RagGraphUnitTests(TestCase):
+    def _has_pydantic_instance(self, value):
+        if isinstance(value, BaseModel):
+            return True
+        if isinstance(value, dict):
+            return any(self._has_pydantic_instance(v) for v in value.values())
+        if isinstance(value, list):
+            return any(self._has_pydantic_instance(v) for v in value)
+        return False
+
     def test_extract_filters_for_buy_query(self):
         filters = rag_graph._extract_filters("Buy a 2bhk flat in Bandra")
         self.assertEqual(
@@ -42,3 +52,28 @@ class RagGraphUnitTests(TestCase):
             state = asyncio.run(rag_graph.run_rag("3bhk apartment in bkc", top_k=5))
 
         self.assertIn("couldn't find an exact match", state["answer"].lower())
+
+    def test_to_plain_data_converts_nested_pydantic_values(self):
+        payload = {
+            "final": rag_graph.FinalAnswer(answer="ok", has_relevant_data=True, sources=[11]),
+            "grade": rag_graph.DocumentGrade(score=8, reason="good"),
+        }
+        normalized = rag_graph._to_plain_data(payload)
+        self.assertEqual(normalized["final"]["answer"], "ok")
+        self.assertEqual(normalized["grade"]["score"], 8)
+        self.assertFalse(self._has_pydantic_instance(normalized))
+
+    def test_run_rag_removes_pydantic_instances_from_graph_state(self):
+        class _FakeWorkflow:
+            async def ainvoke(self, *_args, **_kwargs):
+                return {
+                    "final": rag_graph.FinalAnswer(answer="done", has_relevant_data=True, sources=[22]),
+                    "graded_contexts": [{"grade": rag_graph.DocumentGrade(score=9, reason="fit")}],
+                }
+
+        with patch("apps.core.rag_graph.RAG_WORKFLOW", new=_FakeWorkflow()):
+            state = asyncio.run(rag_graph.run_rag("sample query"))
+
+        self.assertEqual(state["final"]["answer"], "done")
+        self.assertEqual(state["graded_contexts"][0]["grade"]["score"], 9)
+        self.assertFalse(self._has_pydantic_instance(state))
