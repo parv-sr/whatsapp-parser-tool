@@ -1,6 +1,6 @@
 import json
 import logging
-from asgiref.sync import sync_to_async
+from asgiref.sync import async_to_sync, sync_to_async
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
@@ -144,7 +144,20 @@ async def chat_stream(request: HttpRequest):
                 log.exception("Failed to store streamed assistant message")
             yield json.dumps({"type": "done", "model": final_model, "sources": final_sources}) + "\n"
 
-    return StreamingHttpResponse(stream_iter(), content_type="application/x-ndjson")
+    is_asgi_request = hasattr(request, "scope")
+    if is_asgi_request:
+        return StreamingHttpResponse(stream_iter(), content_type="application/x-ndjson")
+
+    async_iter = stream_iter()
+
+    def sync_stream_iter():
+        while True:
+            try:
+                yield async_to_sync(async_iter.__anext__)()
+            except StopAsyncIteration:
+                break
+
+    return StreamingHttpResponse(sync_stream_iter(), content_type="application/x-ndjson")
 
 
 @login_required
