@@ -67,11 +67,10 @@ class ChatStreamTests(TestCase):
                 data='{"query":"Hi"}',
                 content_type="application/json",
             )
+            chunks = [c.decode("utf-8") for c in response.streaming_content]
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/x-ndjson")
-
-        chunks = [c.decode("utf-8") for c in response.streaming_content]
         self.assertEqual(chunks[0], '{"type": "token", "delta": "Hello "}\n')
         self.assertEqual(chunks[1], '{"type": "token", "delta": "there"}\n')
         self.assertEqual(chunks[2], '{"type": "done", "model": "gpt-4o-mini", "sources": [{"id": 1}]}\n')

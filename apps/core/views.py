@@ -151,9 +151,12 @@ async def chat_stream(request: HttpRequest):
     async_iter = stream_iter()
 
     def sync_stream_iter():
+        async def next_chunk():
+            return await async_iter.__anext__()
+
         while True:
             try:
-                yield async_to_sync(async_iter.__anext__)()
+                yield async_to_sync(next_chunk)()
             except StopAsyncIteration:
                 break
 
