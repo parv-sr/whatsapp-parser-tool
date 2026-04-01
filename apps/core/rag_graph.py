@@ -224,6 +224,51 @@ def _with_metadata_defaults(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+
+
+def _normalize_real_estate_shorthand(query: str) -> str:
+    normalized = (query or "").strip()
+    if not normalized:
+        return ""
+
+    substitutions = [
+        (r"\bbkc\b", "bandra kurla complex mumbai"),
+        (r"\bandheri\s*w\b", "andheri west mumbai"),
+        (r"\blokhandwala\b", "lokhandwala andheri west mumbai"),
+        (r"\b([123])\s*[-/]?\s*bhk\b", r"\1 bhk apartment"),
+        (r"\bl&l\b", "leave and license lease"),
+    ]
+    for pattern, replacement in substitutions:
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+
+    lowered = normalized.lower()
+    if "lease" in lowered and "rent" not in lowered:
+        normalized = f"{normalized} for lease"
+    elif "rent" in lowered and "lease" not in lowered:
+        normalized = f"{normalized} for rent"
+
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _extract_hard_constraints(query: str) -> List[str]:
+    lowered = (query or "").lower()
+    constraints: List[str] = []
+    if "balcony" in lowered:
+        constraints.append("must have balcony")
+    if "attached bath" in lowered or "attached bathroom" in lowered:
+        constraints.append("attached bath")
+    if "road view" in lowered:
+        constraints.append("road view")
+    return constraints
+
+
+def _ensure_constraints_in_rewrite(original_query: str, rewritten_query: str) -> str:
+    final_query = (rewritten_query or "").strip()
+    missing = [c for c in _extract_hard_constraints(original_query) if c not in final_query.lower()]
+    if missing:
+        suffix = ", ".join(missing)
+        final_query = f"{final_query}; {suffix}" if final_query else suffix
+    return final_query.strip()
 def _extract_filters(query: str) -> Dict[str, Any]:
     lowered = (query or "").lower()
     filters: Dict[str, Any] = {}
@@ -425,23 +470,31 @@ async def _classify_query_node(state: RAGState) -> RAGState:
 
 async def _rewrite_query_node(state: RAGState) -> RAGState:
     query = state.get("query", "")
+    normalized_query = _normalize_real_estate_shorthand(query) or query
     prompt = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
-                "Rewrite the query for real-estate retrieval. Expand abbreviations and normalize terms. "
-                "Examples: bkc -> bandra kurla complex mumbai, 3bhk -> 3 bhk apartment. Return concise text.",
+                "Rewrite the query for real-estate retrieval. Keep output concise and retrieval-oriented. "
+                "Preserve user hard constraints exactly (for example: must-have balcony, attached bath, road view). "
+                "Few-shot transformations: "
+                "BKC -> bandra kurla complex mumbai; Andheri W -> andheri west mumbai; "
+                "Lokhandwala -> lokhandwala andheri west mumbai; "
+                "1BHK/1 bhk/1-bhk -> 1 bhk apartment; 2BHK/2 bhk/2-bhk -> 2 bhk apartment; "
+                "3BHK/3 bhk/3-bhk -> 3 bhk apartment; "
+                "rent intent -> for rent; lease/L&L intent -> for lease. Return concise text only.",
             ),
             ("human", "Original query: {query}"),
         ]
     )
     try:
         llm = _chat_llm(state, temperature=0.0).with_structured_output(QueryRewrite)
-        rewritten = await (prompt | llm).ainvoke({"query": query})
-        return {"rewritten_query": rewritten.rewritten_query.strip() or query}
+        rewritten = await (prompt | llm).ainvoke({"query": normalized_query})
+        rewritten_query = _ensure_constraints_in_rewrite(query, rewritten.rewritten_query.strip() or normalized_query)
+        return {"rewritten_query": rewritten_query}
     except Exception as exc:
-        log.warning("Rewrite LLM failed; using raw query: %s", exc)
-        return {"rewritten_query": query}
+        log.warning("Rewrite LLM failed; using normalized query: %s", exc)
+        return {"rewritten_query": _ensure_constraints_in_rewrite(query, normalized_query)}
 
 
 async def _retrieve_node(state: RAGState) -> RAGState:

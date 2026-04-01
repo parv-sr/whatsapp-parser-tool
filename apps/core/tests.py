@@ -42,3 +42,23 @@ class RagGraphUnitTests(TestCase):
             state = asyncio.run(rag_graph.run_rag("3bhk apartment in bkc", top_k=5))
 
         self.assertIn("couldn't find an exact match", state["answer"].lower())
+
+    def test_normalize_shorthand_expands_locations_bhk_and_intent(self):
+        normalized = rag_graph._normalize_real_estate_shorthand("Need 2BHK in BKC, Andheri W or Lokhandwala on lease")
+
+        self.assertIn("2 bhk apartment", normalized.lower())
+        self.assertIn("bandra kurla complex mumbai", normalized.lower())
+        self.assertIn("andheri west mumbai", normalized.lower())
+        self.assertIn("lokhandwala andheri west mumbai", normalized.lower())
+        self.assertIn("for lease", normalized.lower())
+
+    def test_ensure_constraints_in_rewrite_preserves_hard_constraints(self):
+        rewritten = rag_graph._ensure_constraints_in_rewrite(
+            "2 bhk in andheri w must-have balcony attached bath road view",
+            "2 bhk apartment in andheri west mumbai for rent",
+        )
+
+        lowered = rewritten.lower()
+        self.assertIn("must have balcony", lowered)
+        self.assertIn("attached bath", lowered)
+        self.assertIn("road view", lowered)
