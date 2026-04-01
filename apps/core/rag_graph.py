@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from functools import lru_cache
+import sys
 from typing import Any, AsyncIterator, Dict, List, Optional, TypedDict
 
 from asgiref.sync import sync_to_async
@@ -82,6 +83,24 @@ class RAGState(TypedDict, total=False):
     final: Dict[str, Any]
     answer: str
     sources: List[Dict[str, Any]]
+    model: str
+    confidence: float
+
+
+def _to_plain_data(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return {k: _to_plain_data(v) for k, v in value.model_dump().items()}
+    if isinstance(value, dict):
+        return {k: _to_plain_data(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_plain_data(v) for v in value]
+    return value
+
+
+async def _ainvoke_structured_output_plain(prompt: Any, llm: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
+    result = await (prompt | llm).ainvoke(payload)
+    plain = _to_plain_data(result)
+    return plain if isinstance(plain, dict) else {}
 
 
 def _escape_html(value: Any) -> str:
@@ -231,6 +250,51 @@ def _with_metadata_defaults(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+
+
+def _normalize_real_estate_shorthand(query: str) -> str:
+    normalized = (query or "").strip()
+    if not normalized:
+        return ""
+
+    substitutions = [
+        (r"\bbkc\b", "bandra kurla complex mumbai"),
+        (r"\bandheri\s*w\b", "andheri west mumbai"),
+        (r"\blokhandwala\b", "lokhandwala andheri west mumbai"),
+        (r"\b([123])\s*[-/]?\s*bhk\b", r"\1 bhk apartment"),
+        (r"\bl&l\b", "leave and license lease"),
+    ]
+    for pattern, replacement in substitutions:
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+
+    lowered = normalized.lower()
+    if "lease" in lowered and "rent" not in lowered:
+        normalized = f"{normalized} for lease"
+    elif "rent" in lowered and "lease" not in lowered:
+        normalized = f"{normalized} for rent"
+
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _extract_hard_constraints(query: str) -> List[str]:
+    lowered = (query or "").lower()
+    constraints: List[str] = []
+    if "balcony" in lowered:
+        constraints.append("must have balcony")
+    if "attached bath" in lowered or "attached bathroom" in lowered:
+        constraints.append("attached bath")
+    if "road view" in lowered:
+        constraints.append("road view")
+    return constraints
+
+
+def _ensure_constraints_in_rewrite(original_query: str, rewritten_query: str) -> str:
+    final_query = (rewritten_query or "").strip()
+    missing = [c for c in _extract_hard_constraints(original_query) if c not in final_query.lower()]
+    if missing:
+        suffix = ", ".join(missing)
+        final_query = f"{final_query}; {suffix}" if final_query else suffix
+    return final_query.strip()
 def _extract_filters(query: str) -> Dict[str, Any]:
     lowered = (query or "").lower()
     filters: Dict[str, Any] = {}
@@ -497,8 +561,11 @@ async def _classify_query_node(state: RAGState) -> RAGState:
     )
     try:
         llm = _chat_llm(state, temperature=0.0).with_structured_output(RealEstateClassifier)
-        result = await (prompt | llm).ainvoke({"query": query})
-        return {"is_real_estate_query": bool(result.is_real_estate_query), "reject_reason": result.reason}
+        result = await _ainvoke_structured_output_plain(prompt, llm, {"query": query})
+        return {
+            "is_real_estate_query": bool(result.get("is_real_estate_query")),
+            "reject_reason": str(result.get("reason") or ""),
+        }
     except Exception as exc:
         log.warning("Classifier LLM failed; falling back to heuristic classifier: %s", exc)
         return {"is_real_estate_query": _is_domain_query(query), "reject_reason": "heuristic_fallback"}
@@ -506,23 +573,31 @@ async def _classify_query_node(state: RAGState) -> RAGState:
 
 async def _rewrite_query_node(state: RAGState) -> RAGState:
     query = state.get("query", "")
+    normalized_query = _normalize_real_estate_shorthand(query) or query
     prompt = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
-                "Rewrite the query for real-estate retrieval. Expand abbreviations and normalize terms. "
-                "Examples: bkc -> bandra kurla complex mumbai, 3bhk -> 3 bhk apartment. Return concise text.",
+                "Rewrite the query for real-estate retrieval. Keep output concise and retrieval-oriented. "
+                "Preserve user hard constraints exactly (for example: must-have balcony, attached bath, road view). "
+                "Few-shot transformations: "
+                "BKC -> bandra kurla complex mumbai; Andheri W -> andheri west mumbai; "
+                "Lokhandwala -> lokhandwala andheri west mumbai; "
+                "1BHK/1 bhk/1-bhk -> 1 bhk apartment; 2BHK/2 bhk/2-bhk -> 2 bhk apartment; "
+                "3BHK/3 bhk/3-bhk -> 3 bhk apartment; "
+                "rent intent -> for rent; lease/L&L intent -> for lease. Return concise text only.",
             ),
             ("human", "Original query: {query}"),
         ]
     )
     try:
         llm = _chat_llm(state, temperature=0.0).with_structured_output(QueryRewrite)
-        rewritten = await (prompt | llm).ainvoke({"query": query})
-        return {"rewritten_query": rewritten.rewritten_query.strip() or query}
+        rewritten = await (prompt | llm).ainvoke({"query": normalized_query})
+        rewritten_query = _ensure_constraints_in_rewrite(query, rewritten.rewritten_query.strip() or normalized_query)
+        return {"rewritten_query": rewritten_query}
     except Exception as exc:
-        log.warning("Rewrite LLM failed; using raw query: %s", exc)
-        return {"rewritten_query": query}
+        log.warning("Rewrite LLM failed; using normalized query: %s", exc)
+        return {"rewritten_query": _ensure_constraints_in_rewrite(query, normalized_query)}
 
 
 async def _retrieve_node(state: RAGState) -> RAGState:
@@ -627,8 +702,12 @@ async def _generate_node(state: RAGState) -> RAGState:
     )
     try:
         llm = _chat_llm(state).with_structured_output(FinalAnswer)
-        result = await (prompt | llm).ainvoke({"query": query, "memory": memory or "None", "snippets": "\n".join(snippet_blocks)})
-        return {"final": result.model_dump()}
+        result = await _ainvoke_structured_output_plain(
+            prompt,
+            llm,
+            {"query": query, "memory": memory or "None", "snippets": "\n".join(snippet_blocks)},
+        )
+        return {"final": result}
     except Exception as exc:
         log.warning("Generate LLM failed; returning deterministic fallback summary: %s", exc)
         top_ids = [int(item.get("id")) for item in graded_contexts[:3] if item.get("id")]
@@ -671,13 +750,56 @@ async def _fallback_node(state: RAGState) -> RAGState:
 
 
 async def _format_output_node(state: RAGState) -> RAGState:
-    final = state.get("final") or {}
+    final = state.get("final") if isinstance(state.get("final"), dict) else {}
+
+    if not final:
+        graded = state.get("graded_contexts") or []
+        fallback_ids = [int(ctx.get("id")) for ctx in graded[:3] if str(ctx.get("id", "")).isdigit()]
+        if fallback_ids:
+            final = {
+                "answer": "I couldn't find enough listing evidence to answer that reliably.",
+                "sources": fallback_ids,
+                "confidence": 0.0,
+            }
+        else:
+            final = {
+                "answer": "I couldn't find enough listing evidence to answer that reliably.",
+                "sources": [],
+                "confidence": 0.0,
+            }
+
     answer_text = (final.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
-    source_ids = [int(s) for s in (final.get("sources") or []) if str(s).isdigit()]
+    raw_sources = final.get("sources")
+    source_ids: List[int] = []
+    if isinstance(raw_sources, list):
+        for item in raw_sources:
+            candidate = item.get("id") if isinstance(item, dict) else item
+            if str(candidate).isdigit():
+                source_ids.append(int(candidate))
+
     contexts = state.get("graded_contexts") or state.get("contexts") or []
-    sources = [ctx for ctx in contexts if ctx.get("id") in set(source_ids)]
+    source_set = set(source_ids)
+    sources = []
+    for ctx in contexts:
+        if ctx.get("id") not in source_set:
+            continue
+        normalized = dict(ctx)
+        normalized["id"] = int(ctx.get("id"))
+        normalized["metadata"] = _with_metadata_defaults(ctx.get("metadata") or {})
+        sources.append(normalized)
+
     answer = _compose_answer_html(state, answer_text, source_ids)
-    return {"answer": answer, "sources": sources}
+    output: RAGState = {"answer": answer, "sources": sources}
+
+    model = final.get("model") or state.get("model")
+    if isinstance(model, str) and model:
+        output["model"] = _safe_model(model)
+
+    confidence = final.get("confidence")
+    if isinstance(confidence, (int, float)):
+        output["confidence"] = float(confidence)
+
+    return output
 
 
 @lru_cache(maxsize=1)
@@ -692,26 +814,68 @@ def _checkpoint_dsn() -> Optional[str]:
     )
 
 
+@lru_cache(maxsize=1)
+def _checkpoint_backend_config() -> Dict[str, str]:
+    dsn = _checkpoint_dsn()
+    backend = "none"
+    reason = "No checkpoint DSN configured."
+
+    if not dsn:
+        pass
+    elif sys.platform == "win32":
+        backend = "memory"
+        reason = "Windows runtime detected; skipping async PostgresSaver and using in-memory saver."
+    else:
+        backend = "postgres"
+        reason = "Using async PostgresSaver backend."
+
+    log.info("Checkpoint backend selected: %s (%s)", backend, reason)
+    return {"backend": backend, "reason": reason}
+
+
 @asynccontextmanager
 async def _checkpointer_context():
+    config = _checkpoint_backend_config()
+    backend = config["backend"]
+
+    if backend == "none":
+        yield None
+        return
+
+    if backend == "memory":
+        from langgraph.checkpoint.memory import MemorySaver
+
+        yield MemorySaver()
+        return
+
     dsn = _checkpoint_dsn()
     if not dsn:
         yield None
         return
 
+    if sys.platform == "win32" and isinstance(asyncio.get_running_loop(), asyncio.ProactorEventLoop):
+        from langgraph.checkpoint.memory import MemorySaver
+
+        yield MemorySaver()
+        return
+
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     except ModuleNotFoundError:
-        log.info("LangGraph postgres checkpoint package unavailable; running without checkpointer.")
-        yield None
+        log.info("LangGraph postgres checkpoint package unavailable; using in-memory saver.")
+        from langgraph.checkpoint.memory import MemorySaver
+
+        yield MemorySaver()
         return
 
     try:
         async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer:
             yield checkpointer
     except Exception as exc:
-        log.warning("Falling back to graph without Postgres checkpointer: %s", exc)
-        yield None
+        log.warning("Falling back to in-memory checkpointer after PostgresSaver failure: %s", exc)
+        from langgraph.checkpoint.memory import MemorySaver
+
+        yield MemorySaver()
 
 
 def _build_graph_definition():
@@ -759,7 +923,7 @@ async def run_rag(
     config = {"configurable": {"thread_id": thread_id}}
     async with _checkpointer_context() as checkpointer:
         workflow = GRAPH_DEFINITION.compile(checkpointer=checkpointer) if checkpointer else RAG_WORKFLOW
-        return await workflow.ainvoke(state, config=config)
+        return _to_plain_data(await workflow.ainvoke(state, config=config))
 
 
 async def stream_rag_events(
@@ -787,13 +951,13 @@ async def stream_rag_events(
             if event.get("event") == "on_chain_end" and event.get("name") == "format_output":
                 maybe_state = event.get("data", {}).get("output") or {}
                 if isinstance(maybe_state, dict):
-                    final_state = maybe_state
+                    final_state = _to_plain_data(maybe_state)
 
         if not final_state:
             final_state = await run_rag(query, top_k, model, temperature, memory, thread_id)
 
         answer = (final_state.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
-        sources = final_state.get("sources") or []
+        sources = _to_plain_data(final_state.get("sources") or [])
         if answer:
             chunk_size = 120
             for i in range(0, len(answer), chunk_size):
