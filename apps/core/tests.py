@@ -6,6 +6,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from pydantic import BaseModel
 from django.urls import reverse
 
 from apps.core.models import ChatMessage
@@ -13,6 +14,15 @@ from apps.core import rag_graph
 
 
 class RagGraphUnitTests(TestCase):
+    def _has_pydantic_instance(self, value):
+        if isinstance(value, BaseModel):
+            return True
+        if isinstance(value, dict):
+            return any(self._has_pydantic_instance(v) for v in value.values())
+        if isinstance(value, list):
+            return any(self._has_pydantic_instance(v) for v in value)
+        return False
+
     def test_extract_filters_for_buy_query(self):
         filters = rag_graph._extract_filters("Buy a 2bhk flat in Bandra")
         self.assertEqual(
