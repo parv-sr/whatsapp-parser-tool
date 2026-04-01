@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any, AsyncIterator, Dict, List, Optional, TypedDict
 
@@ -520,28 +521,40 @@ async def _format_output_node(state: RAGState) -> RAGState:
 
 
 @lru_cache(maxsize=1)
-def _build_checkpointer():
+def _checkpoint_dsn() -> Optional[str]:
+    db = connections["default"].settings_dict
+    if db.get("ENGINE", "").endswith("sqlite3"):
+        return None
+    return (
+        getattr(settings, "LANGGRAPH_CHECKPOINT_DSN", None)
+        or db.get("OPTIONS", {}).get("dsn")
+        or f"postgresql://{db.get('USER')}:{db.get('PASSWORD')}@{db.get('HOST') or 'localhost'}:{db.get('PORT') or 5432}/{db.get('NAME')}"
+    )
+
+
+@asynccontextmanager
+async def _checkpointer_context():
+    dsn = _checkpoint_dsn()
+    if not dsn:
+        yield None
+        return
+
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
-        db = connections["default"].settings_dict
-        if db.get("ENGINE", "").endswith("sqlite3"):
-            return None
-        url = (
-            getattr(settings, "LANGGRAPH_CHECKPOINT_DSN", None)
-            or db.get("OPTIONS", {}).get("dsn")
-            or f"postgresql://{db.get('USER')}:{db.get('PASSWORD')}@{db.get('HOST') or 'localhost'}:{db.get('PORT') or 5432}/{db.get('NAME')}"
-        )
-        return AsyncPostgresSaver.from_conn_string(url)
     except ModuleNotFoundError:
         log.info("LangGraph postgres checkpoint package unavailable; running without checkpointer.")
-        return None
+        yield None
+        return
+
+    try:
+        async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer:
+            yield checkpointer
     except Exception:
         log.exception("Falling back to graph without Postgres checkpointer")
-        return None
+        yield None
 
 
-def build_rag_graph():
+def _build_graph_definition():
     graph = StateGraph(RAGState)
     graph.add_node("classify", _classify_query_node)
     graph.add_node("rewrite_query", _rewrite_query_node)
@@ -560,11 +573,11 @@ def build_rag_graph():
     graph.add_edge("fallback", "format_output")
     graph.add_edge("format_output", END)
 
-    checkpointer = _build_checkpointer()
-    return graph.compile(checkpointer=checkpointer) if checkpointer else graph.compile()
+    return graph
 
 
-RAG_WORKFLOW = build_rag_graph()
+GRAPH_DEFINITION = _build_graph_definition()
+RAG_WORKFLOW = GRAPH_DEFINITION.compile()
 
 
 async def run_rag(
@@ -584,7 +597,9 @@ async def run_rag(
         "thread_id": thread_id,
     }
     config = {"configurable": {"thread_id": thread_id}}
-    return await RAG_WORKFLOW.ainvoke(state, config=config)
+    async with _checkpointer_context() as checkpointer:
+        workflow = GRAPH_DEFINITION.compile(checkpointer=checkpointer) if checkpointer else RAG_WORKFLOW
+        return await workflow.ainvoke(state, config=config)
 
 
 async def stream_rag_events(
@@ -605,27 +620,29 @@ async def stream_rag_events(
     }
     config = {"configurable": {"thread_id": thread_id}}
 
-    final_state: Dict[str, Any] = {}
-    async for event in RAG_WORKFLOW.astream_events(state, config=config, version="v2"):
-        if event.get("event") == "on_chat_model_stream":
-            chunk = event.get("data", {}).get("chunk")
-            delta = getattr(chunk, "content", "") if chunk else ""
-            if isinstance(delta, list):
-                delta = "".join(part.get("text", "") for part in delta if isinstance(part, dict))
-            if delta:
-                yield {"type": "token", "delta": delta}
+    async with _checkpointer_context() as checkpointer:
+        workflow = GRAPH_DEFINITION.compile(checkpointer=checkpointer) if checkpointer else RAG_WORKFLOW
+        final_state: Dict[str, Any] = {}
+        async for event in workflow.astream_events(state, config=config, version="v2"):
+            if event.get("event") == "on_chat_model_stream":
+                chunk = event.get("data", {}).get("chunk")
+                delta = getattr(chunk, "content", "") if chunk else ""
+                if isinstance(delta, list):
+                    delta = "".join(part.get("text", "") for part in delta if isinstance(part, dict))
+                if delta:
+                    yield {"type": "token", "delta": delta}
 
-        if event.get("event") == "on_chain_end" and event.get("name") == "format_output":
-            maybe_state = event.get("data", {}).get("output") or {}
-            if isinstance(maybe_state, dict):
-                final_state = maybe_state
+            if event.get("event") == "on_chain_end" and event.get("name") == "format_output":
+                maybe_state = event.get("data", {}).get("output") or {}
+                if isinstance(maybe_state, dict):
+                    final_state = maybe_state
 
-    if not final_state:
-        final_state = await run_rag(query, top_k, model, temperature, memory, thread_id)
+        if not final_state:
+            final_state = await run_rag(query, top_k, model, temperature, memory, thread_id)
 
-    answer = (final_state.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
-    sources = final_state.get("sources") or []
-    yield {"type": "final", "answer": answer, "sources": sources, "model": _safe_model(model)}
+        answer = (final_state.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
+        sources = final_state.get("sources") or []
+        yield {"type": "final", "answer": answer, "sources": sources, "model": _safe_model(model)}
 
 
 async def get_recent_messages_text(user, limit: int = 6) -> str:
