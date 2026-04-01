@@ -25,7 +25,7 @@ from apps.preprocessing.models import ListingChunk
 
 log = logging.getLogger(__name__)
 
-DEFAULT_TOP_K = 8
+DEFAULT_TOP_K = 10
 CHAT_MODEL = getattr(settings, "CHAT_MODEL", "gpt-4o-mini")
 ALLOWED_CHAT_MODELS = getattr(settings, "OPENAI_CHAT_MODELS", ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"])
 ENABLE_LLM_GRADING = bool(getattr(settings, "RAG_ENABLE_LLM_GRADING", True))
@@ -142,6 +142,74 @@ def _compose_answer_html(state: RAGState, final_text: str, source_ids: List[int]
 
     top_matches = []
     for idx, row in enumerate(rows[:3], start=1):
+        meta = _with_metadata_defaults(row.get("metadata") or {})
+        top_matches.append(
+            f"<li><strong>Listing ID: {_escape_html(row.get('id'))}</strong> - "
+            f"{_escape_html(meta.get('bhk', 'Not specified'))}, "
+            f"{_escape_html(meta.get('location', 'Not specified'))}, "
+            f"{_escape_html(meta.get('transaction_type', 'Not specified'))}.</li>"
+        )
+
+    intro_text = final_text or "Here are the best matches I found in your uploaded WhatsApp listings."
+    table_html = (
+        "<h4>Details</h4>"
+        "<table><thead><tr>"
+        "<th>ID</th><th>Transaction</th><th>Property</th><th>Location</th>"
+        "<th>Building</th><th>BHK</th><th>SQFT</th><th>Price</th>"
+        "</tr></thead><tbody>"
+        f"{_build_html_table_rows(rows)}"
+        "</tbody></table>"
+    )
+    if not rows:
+        table_html = "<p><em>No listing rows available yet. Try broadening your query.</em></p>"
+
+    top_html = f"<h4>Top Matches</h4><ol>{''.join(top_matches)}</ol>" if top_matches else ""
+    return f"<p>{_escape_html(intro_text)}</p>{top_html}{table_html}"
+
+
+def _escape_html(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _build_html_table_rows(rows: List[Dict[str, Any]]) -> str:
+    rendered: List[str] = []
+    for item in rows:
+        meta = _with_metadata_defaults(item.get("metadata") or {})
+        rendered.append(
+            "<tr>"
+            f"<td>{_escape_html(item.get('id', ''))}</td>"
+            f"<td>{_escape_html(meta.get('transaction_type', 'Not specified'))}</td>"
+            f"<td>{_escape_html(meta.get('property_type', 'Not specified'))}</td>"
+            f"<td>{_escape_html(meta.get('location', 'Not specified'))}</td>"
+            f"<td>{_escape_html(meta.get('building_name', 'Not specified'))}</td>"
+            f"<td>{_escape_html(meta.get('bhk', 'Not specified'))}</td>"
+            f"<td>{_escape_html(meta.get('sqft', 'Not specified'))}</td>"
+            f"<td>{_escape_html(meta.get('price', 'Not specified'))}</td>"
+            "</tr>"
+        )
+    return "".join(rendered)
+
+
+def _compose_answer_html(state: RAGState, final_text: str, source_ids: List[int]) -> str:
+    contexts = state.get("graded_contexts") or state.get("contexts") or []
+    source_set = set(source_ids or [])
+    preferred_rows = [ctx for ctx in contexts if ctx.get("id") in source_set]
+    scored_rows = [ctx for ctx in contexts if (ctx.get("relevance_score") or 0) >= 6]
+    dynamic_limit = min(10, max(3, len(scored_rows) or len(preferred_rows) or len(contexts)))
+
+    rows = preferred_rows
+    if not rows:
+        rows = scored_rows or contexts
+    rows = rows[:dynamic_limit]
+
+    top_matches = []
+    for idx, row in enumerate(rows[: min(5, len(rows))], start=1):
         meta = _with_metadata_defaults(row.get("metadata") or {})
         top_matches.append(
             f"<li><strong>Listing ID: {_escape_html(row.get('id'))}</strong> - "

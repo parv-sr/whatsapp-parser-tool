@@ -1,5 +1,6 @@
 import json
 import logging
+from asgiref.sync import async_to_sync
 from asgiref.sync import sync_to_async
 
 from django.conf import settings
@@ -11,12 +12,12 @@ from apps.core.utils.html_sanitiser import clean_html
 from apps.preprocessing.models import ListingChunk
 
 from .models import ChatMessage
-from .rag_graph import get_recent_messages_text, run_rag, stream_rag_events
+from .rag_graph import get_recent_messages_text, run_rag
 
 log = logging.getLogger(__name__)
 
 CHAT_MODEL = getattr(settings, "CHAT_MODEL", "gpt-4o-mini")
-DEFAULT_TOP_K = 8
+DEFAULT_TOP_K = 10
 ALLOWED_CHAT_MODELS = getattr(settings, "OPENAI_CHAT_MODELS", ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"])
 
 
@@ -89,7 +90,7 @@ async def chat_query(request: HttpRequest):
 
 
 @login_required
-async def chat_stream(request: HttpRequest):
+def chat_stream(request: HttpRequest):
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 
