@@ -9,7 +9,6 @@ import os
 from dotenv import load_dotenv
 import ssl
 import sys
-import platform
 from urllib.parse import quote_plus
 
 load_dotenv()
