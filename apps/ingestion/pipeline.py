@@ -101,6 +101,11 @@ def _generate_dedupe_hash(
 ) -> str:
     norm_text = re.sub(r"\s+", "", (cleaned_text or "")).lower()
     norm_sender = re.sub(r"\s+", "", (sender or "")).lower()
+    if not any([location, transaction_type, listing_intent]):
+        # Backward-compatible behavior for callsites/fixtures that only provide text+sender.
+        raw_key = f"{norm_text}|{norm_sender}"
+        return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
     norm_location = re.sub(r"\s+", "", (location or "")).lower()
     norm_transaction = re.sub(r"\s+", "", (transaction_type or "")).lower()
     norm_intent = re.sub(r"\s+", "", (listing_intent or "")).lower()
