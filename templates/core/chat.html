@@ -592,7 +592,7 @@
                 "Content-Type": "application/json",
                 "X-CSRFToken": "{{ csrf_token }}"
             },
-            body: JSON.stringify({ query: question, model: selectedModel, top_k: 8 })
+            body: JSON.stringify({ query: question, model: selectedModel, top_k: 10 })
         });
 
         if (!res.ok || !res.body) {

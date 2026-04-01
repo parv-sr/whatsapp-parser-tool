@@ -1,5 +1,6 @@
 import json
 import logging
+from asgiref.sync import async_to_sync
 from asgiref.sync import sync_to_async
 
 from django.conf import settings
@@ -11,12 +12,12 @@ from apps.core.utils.html_sanitiser import clean_html
 from apps.preprocessing.models import ListingChunk
 
 from .models import ChatMessage
-from .rag_graph import get_recent_messages_text, run_rag, stream_rag_events
+from .rag_graph import get_recent_messages_text, run_rag
 
 log = logging.getLogger(__name__)
 
 CHAT_MODEL = getattr(settings, "CHAT_MODEL", "gpt-4o-mini")
-DEFAULT_TOP_K = 8
+DEFAULT_TOP_K = 10
 ALLOWED_CHAT_MODELS = getattr(settings, "OPENAI_CHAT_MODELS", ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"])
 
 
@@ -89,7 +90,7 @@ async def chat_query(request: HttpRequest):
 
 
 @login_required
-async def chat_stream(request: HttpRequest):
+def chat_stream(request: HttpRequest):
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 
@@ -105,41 +106,36 @@ async def chat_stream(request: HttpRequest):
     temperature = float(body.get("temperature", 0.0))
     selected_model = body.get("model") if body.get("model") in ALLOWED_CHAT_MODELS else CHAT_MODEL
 
-    await sync_to_async(ChatMessage.objects.create)(user=request.user, role="user", content=query)
-    memory = await get_recent_messages_text(request.user, limit=6)
+    ChatMessage.objects.create(user=request.user, role="user", content=query)
+    memory = async_to_sync(get_recent_messages_text)(request.user, limit=6)
     thread_id = f"user-{request.user.id}"
 
-    async def stream_iter():
+    def stream_iter():
         parts = []
         final_sources = []
         final_model = selected_model
         try:
-            async for payload in stream_rag_events(
+            state = async_to_sync(run_rag)(
                 query=query,
                 top_k=top_k,
                 model=selected_model,
                 temperature=temperature,
                 memory=memory,
                 thread_id=thread_id,
-            ):
-                if payload.get("type") == "token":
-                    delta = payload.get("delta", "")
-                    if delta:
-                        parts.append(delta)
-                        yield json.dumps({"type": "token", "delta": delta}) + "\n"
-                elif payload.get("type") == "final":
-                    final_sources = payload.get("sources") or []
-                    final_model = payload.get("model") or selected_model
-                    if not parts and payload.get("answer"):
-                        answer_text = payload.get("answer")
-                        parts.append(answer_text)
-                        yield json.dumps({"type": "token", "delta": answer_text}) + "\n"
+            )
+            final_answer = (state.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
+            final_sources = state.get("sources") or []
+            chunk_size = 48
+            for i in range(0, len(final_answer), chunk_size):
+                delta = final_answer[i : i + chunk_size]
+                parts.append(delta)
+                yield json.dumps({"type": "token", "delta": delta}) + "\n"
         except Exception as e:
             yield json.dumps({"type": "error", "message": f"Streaming error: {str(e)}"}) + "\n"
         finally:
             final_answer = "".join(parts).strip() or "I couldn't find enough listing evidence to answer that reliably."
             try:
-                await sync_to_async(ChatMessage.objects.create)(user=request.user, role="assistant", content=final_answer)
+                ChatMessage.objects.create(user=request.user, role="assistant", content=final_answer)
             except Exception:
                 log.exception("Failed to store streamed assistant message")
             yield json.dumps({"type": "done", "model": final_model, "sources": final_sources}) + "\n"
