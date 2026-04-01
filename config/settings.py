@@ -9,6 +9,7 @@ import os
 from dotenv import load_dotenv
 import ssl
 import sys
+from urllib.parse import quote_plus
 
 load_dotenv()
 
@@ -140,7 +141,15 @@ DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "whatsapp-parser-tool-db")
 
-CELERY_BROKER_URL = f'sqlalchemy+postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
+ENCODED_DB_USER = quote_plus(DB_USER)
+ENCODED_DB_PASS = quote_plus(DB_PASS)
+ENCODED_DB_HOST = quote_plus(DB_HOST)
+ENCODED_DB_NAME = quote_plus(DB_NAME)
+
+CELERY_BROKER_URL = (
+    f"sqlalchemy+postgresql://{ENCODED_DB_USER}:{ENCODED_DB_PASS}"
+    f"@{ENCODED_DB_HOST}:{DB_PORT}/{ENCODED_DB_NAME}"
+)
 
 if not DEBUG and DB_HOST not in ['localhost', '127.0.0.1']:
     CELERY_BROKER_URL += '?sslmode=require'
@@ -150,6 +159,15 @@ if not DEBUG and DB_HOST not in ['localhost', '127.0.0.1']:
 CELERY_RESULT_BACKEND = 'django-db'
 CELERY_BROKER_USE_SSL = False
 CELERY_REDIS_BACKEND_USE_SSL = False
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_CONNECTION_MAX_RETRIES = None
+CELERY_BROKER_CONNECTION_TIMEOUT = int(os.getenv("CELERY_BROKER_CONNECTION_TIMEOUT", "30"))
+CELERY_BROKER_POOL_LIMIT = int(os.getenv("CELERY_BROKER_POOL_LIMIT", "2"))
+CELERY_BROKER_HEARTBEAT = int(os.getenv("CELERY_BROKER_HEARTBEAT", "10"))
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "pool_pre_ping": True,
+}
+CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS = True
 
 CELERY_WORKER_CONCURRENCY = 16
 # Prevent worker from prefetching too many tasks (fair distribution)
@@ -277,4 +295,3 @@ if os.getenv("SKIP_MIGRATIONS", "False") == "True":
         for app in INSTALLED_APPS 
         if app.split('.')[-1] != 'pgvector'
     }
-

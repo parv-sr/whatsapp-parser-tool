@@ -21,7 +21,7 @@ from apps.preprocessing.models import ListingChunk, EmbeddingRecord
 from apps.embeddings.vector_store import aupsert_listing_embeddings
 
 # Extraction
-from apps.preprocessing.extractor import extract_listings_from_batch
+from apps.preprocessing.extractor import BatchItemResult, extract_listings_from_batch
 
 # Vectoriser
 try:
@@ -92,10 +92,19 @@ def _cancel_requested(raw_file_id: int) -> bool:
     return cancelled
 
 
-def _generate_dedupe_hash(cleaned_text: str, sender: str) -> str:
+def _generate_dedupe_hash(
+    cleaned_text: str,
+    sender: str,
+    location: str = "",
+    transaction_type: str = "",
+    listing_intent: str = "",
+) -> str:
     norm_text = re.sub(r"\s+", "", (cleaned_text or "")).lower()
     norm_sender = re.sub(r"\s+", "", (sender or "")).lower()
-    raw_key = f"{norm_text}|{norm_sender}"
+    norm_location = re.sub(r"\s+", "", (location or "")).lower()
+    norm_transaction = re.sub(r"\s+", "", (transaction_type or "")).lower()
+    norm_intent = re.sub(r"\s+", "", (listing_intent or "")).lower()
+    raw_key = f"{norm_text}|{norm_sender}|{norm_location}|{norm_transaction}|{norm_intent}"
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
@@ -202,7 +211,16 @@ def process_single_llm_batch(batch_data):
         batch_seen_hashes = set()
 
         for res in results:
-            idx = res.message_index
+            if isinstance(res, dict):
+                try:
+                    res = BatchItemResult(**res)
+                except Exception as schema_err:
+                    log.warning("Batch %s: dropped invalid result payload (%s)", batch_idx, schema_err)
+                    continue
+
+            idx = getattr(res, "message_index", None)
+            if idx is None:
+                continue
             chunk = map_idx_to_chunk.get(idx)
             if not chunk:
                 continue
@@ -218,7 +236,13 @@ def process_single_llm_batch(batch_data):
                 tracker.add_candidate()
                 text_for_hash = listing_data.cleaned_text
                 composite_key = f"{chunk.sender}|{listing_data.location}|{listing_data.transaction_type}|{text_for_hash[:200]}"
-                composite_hash = _generate_dedupe_hash(text_for_hash, chunk.sender)
+                composite_hash = _generate_dedupe_hash(
+                    text_for_hash,
+                    chunk.sender,
+                    listing_data.location,
+                    listing_data.transaction_type,
+                    listing_data.listing_intent,
+                )
 
                 # 2) in-batch dedupe
                 if composite_hash in batch_seen_hashes:
