@@ -538,12 +538,22 @@
         }
     }
 
+
+    function stripWrappingCodeBlocks(value) {
+        const raw = (value || "").trim();
+        const fenced = raw.match(/^```[a-zA-Z0-9_-]*\n([\s\S]*?)\n```$/);
+        return fenced ? fenced[1].trim() : (value || "");
+    }
+
     function enhanceSourceButtons(root) {
         root.querySelectorAll("table").forEach(table => {
             let idColIndex = -1;
             table.querySelectorAll("th").forEach((th, idx) => {
                 const txt = th.textContent.trim().toLowerCase();
-                if (txt === "id" || txt === "_id") { idColIndex = idx; th.textContent = "source"; }
+                if (["id", "_id", "listing id", "listing_id", "source", "source id", "listing"].includes(txt)) {
+                    idColIndex = idx;
+                    th.textContent = "source";
+                }
             });
             if (idColIndex === -1) return;
             table.querySelectorAll("tbody tr").forEach(row => {
@@ -551,10 +561,14 @@
                 const target = cells[idColIndex];
                 if (!target) return;
                 const idVal = target.textContent.trim();
+
+                // Guard against duplicate/empty button injection.
+                if (!idVal || target.querySelector('button')) return;
+
                 target.innerHTML = "";
                 const btn = document.createElement("button");
                 btn.className = "source-btn";
-                btn.innerHTML = '<span aria-hidden="true">👁</span> View Original';
+                btn.textContent = "View Message";
                 btn.onclick = () => openSourceModal(idVal);
                 target.appendChild(btn);
             });
@@ -565,7 +579,8 @@
         const div = document.createElement("div");
         div.classList.add("msg", role === "user" ? "user-msg" : "assistant-msg");
         if (role === "assistant") {
-            div.innerHTML = marked.parse(text || "");
+            const cleanText = stripWrappingCodeBlocks(text || "");
+            div.innerHTML = marked.parse(cleanText);
             if (!streaming) enhanceSourceButtons(div);
         } else {
             div.textContent = text;
@@ -619,7 +634,8 @@
                     const evt = JSON.parse(line);
                     if (evt.type === "token") {
                         answer += evt.delta || "";
-                        assistantBubble.innerHTML = marked.parse(answer);
+                        let cleanAnswer = stripWrappingCodeBlocks(answer);
+                        assistantBubble.innerHTML = marked.parse(cleanAnswer);
                         scrollBottom();
                     } else if (evt.type === "done") {
                         chatStatus.textContent = `Model: ${evt.model || selectedModel}`;
@@ -630,7 +646,8 @@
             }
         }
 
-        assistantBubble.innerHTML = marked.parse(answer || "⚠️ Empty response.");
+        let cleanAnswer = stripWrappingCodeBlocks(answer || "⚠️ Empty response.");
+        assistantBubble.innerHTML = marked.parse(cleanAnswer);
         enhanceSourceButtons(assistantBubble);
         scrollBottom();
     }
