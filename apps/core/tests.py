@@ -1,6 +1,6 @@
 import asyncio
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
@@ -60,7 +60,7 @@ class RagGraphUnitTests(TestCase):
             ],
         )
 
-        fake_llm = AsyncMock()
+        fake_llm = MagicMock()
         fake_llm.bind_tools.return_value = fake_llm
         fake_llm.ainvoke = AsyncMock(return_value=ai_with_tool_call)
 
@@ -88,7 +88,7 @@ class RagGraphUnitTests(TestCase):
                 ],
             )
 
-        fake_llm = AsyncMock()
+        fake_llm = MagicMock()
         fake_llm.bind_tools.return_value = fake_llm
         fake_llm.ainvoke = AsyncMock(side_effect=_fake_ainvoke)
         seeded_messages = [
