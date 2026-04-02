@@ -58,7 +58,7 @@ cd whatsapp-parser-tool
 ```
 
 
-3. Install Dependencies
+### 3. Install Dependencies
 Create a virtual environment and install the required packages:
 
 ```bash
@@ -67,7 +67,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-4. Database Setup
+### 4. Database Setup
 Ensure PostgreSQL is running and create the database. Crucially, you must enable the vector extension.
 ```sql
 CREATE DATABASE "whatsapp-parser-tool-db";
@@ -75,7 +75,7 @@ CREATE DATABASE "whatsapp-parser-tool-db";
 CREATE EXTENSION vector;
 ```
 
-5. Environment Variables
+### 5. Environment Variables
 Create a .env file in the root directory and populate it with your local credentials:
 
 Code snippet
@@ -101,22 +101,26 @@ Apply the database migrations (this will set up the tables and the HNSW indexes 
 python manage.py migrate
 (Note: If you encounter caching errors, run python manage.py createcachetable to setup the database cache backend).
 
-7. Start the Services
+### 7. Start the Services
 You need three terminal windows to run the full stack locally:
 
-Terminal 1: Django Server
+# Terminal 1: Django Server
 
-
+```bash
 python manage.py runserver
-Terminal 2: Redis Server
+```
+
+# Terminal 2: Redis Server
 
 redis-server
-Terminal 3: Celery Worker
+
+# Terminal 3: Celery Worker
 
 ```bash
 celery -A config worker -l info --concurrency=4
 ```
-🧪 Running Tests
+
+### 🧪 Running Tests
 The project uses Django's standard TestCase combined with unittest.mock to mock OpenAI API calls to prevent billing charges during CI/CD.
 
 To run the test suite:
@@ -125,30 +129,24 @@ python manage.py test
 ```
 Note: The test suite includes custom tearDown methods to safely close dangling asynchronous database connections created by LangGraph/asyncio, ensuring smooth teardowns of the test databases.
 
-🚢 Deployment
+### 🚢 Deployment
 The project is configured for deployment on platforms like Render or Vercel.
 
 Production Configurations included:
 
 whitenoise for compressed, manifest-based static file serving.
-
 SSL forced redirects and secure cookies (SECURE_SSL_REDIRECT = True).
-
 Celery configured to use the Database URL as the broker with SSL mode enabled.
-
 Custom build.sh script to automate installation, static collection, and migrations during build pipelines.
 
-To deploy:
+# To deploy:
 
 Connect your GitHub repository to your hosting provider.
-
 Set the Build Command: ./build.sh
-
 Set the Start Command: ./render_start.sh (or gunicorn config.wsgi:application)
-
 Add all environment variables from your .env to the provider's settings.
 
-🔒 Security & Privacy
+### 🔒 Security & Privacy
 Uploaded files are processed securely.
 
 The system is configured to intentionally drop System: Messages and calls are end-to-end encrypted. rows and focuses strictly on property listings.
