@@ -169,12 +169,17 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
 }
 CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS = True
 
-CELERY_WORKER_CONCURRENCY = 16
+IS_WINDOWS = os.name == "nt"
+CELERY_WORKER_POOL = os.getenv("CELERY_WORKER_POOL", "threads" if IS_WINDOWS else "prefork")
+CELERY_WORKER_CONCURRENCY = int(
+    os.getenv("CELERY_WORKER_CONCURRENCY", "4" if IS_WINDOWS else "16")
+)
 # Prevent worker from prefetching too many tasks (fair distribution)
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 # Disable result backend to save Redis Ops (critical for 10k daily limit)
 CELERY_TASK_IGNORE_RESULT = True
 CELERY_TASK_STORE_ERRORS_EVEN_IF_IGNORED = True
+CELERY_WORKER_MAX_TASKS_PER_CHILD = int(os.getenv("CELERY_WORKER_MAX_TASKS_PER_CHILD", "20"))
 
 # --- MOVED CACHE TO DATABASE (SUPABASE) ---
 CACHES = {
