@@ -68,6 +68,7 @@ async def chat_query(request: HttpRequest):
     selected_model = body.get("model") if body.get("model") in ALLOWED_CHAT_MODELS else CHAT_MODEL
 
     await sync_to_async(ChatMessage.objects.create)(user=request.user, role="user", content=query)
+    thread_id = f"user_{request.user.id}_chat"
 
     try:
         memory = await get_recent_messages_text(request.user, limit=6)
@@ -77,7 +78,7 @@ async def chat_query(request: HttpRequest):
             model=selected_model,
             temperature=temperature,
             memory=memory,
-            thread_id=f"user-{request.user.id}",
+            thread_id=thread_id,
         )
         answer = (state.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
         sources = state.get("sources") or []
@@ -107,7 +108,7 @@ async def chat_stream(request: HttpRequest):
     selected_model = body.get("model") if body.get("model") in ALLOWED_CHAT_MODELS else CHAT_MODEL
 
     await sync_to_async(ChatMessage.objects.create)(user=request.user, role="user", content=query)
-    thread_id = f"user-{request.user.id}"
+    thread_id = f"user_{request.user.id}_chat"
     is_asgi_request = hasattr(request, "scope")
     memory = await get_recent_messages_text(request.user, limit=6)
 
