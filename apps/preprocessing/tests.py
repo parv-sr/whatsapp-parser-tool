@@ -40,6 +40,44 @@ class PropertyListingSchemaTests(TestCase):
 
 
 class ExtractorAndPipelineIntegrationTests(TestCase):
+    def test_extractor_sequential_fallback(self):
+        sequential_payload = [
+            {
+                "message_index": 0,
+                "is_irrelevant": False,
+                "listings": [
+                    {
+                        "cleaned_text": "2 bhk for rent in Bandra West",
+                        "listing_intent": "OFFER",
+                        "transaction_type": "RENT",
+                        "property_type": "RESIDENTIAL",
+                        "location": "Bandra West",
+                    }
+                ],
+            }
+        ]
+
+        side_effects = [
+            Exception("Mock 400 Bad Request"),
+            sequential_payload,
+            sequential_payload,
+            sequential_payload,
+        ]
+
+        with patch("apps.preprocessing.extractor._call_llm_api", new=AsyncMock(side_effect=side_effects)) as mock_call:
+            results = asyncio.run(
+                _process_packet(
+                    ["msg one", "msg two", "msg three"],
+                    start_global_idx=0,
+                    semaphore=asyncio.Semaphore(1),
+                )
+            )
+
+        self.assertEqual(mock_call.call_count, 4)
+        self.assertEqual(len(results), 3)
+        self.assertTrue(all(isinstance(item, BatchItemResult) for item in results))
+        self.assertEqual([item.message_index for item in results], [0, 1, 2])
+
     def test_process_packet_uses_mocked_openai_and_validates_schema(self):
         fake_json = {
             "results": [

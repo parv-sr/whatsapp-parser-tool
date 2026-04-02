@@ -14,14 +14,15 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import connection
 from django.db import connections
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableLambda, RunnableParallel
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic import BaseModel, Field
 
+from apps.core.tools import search_property_listings
 from apps.embeddings.vector_store import build_pg_filter, get_vectorstore, get_vectorstore_async
 from apps.preprocessing.models import ListingChunk
 
@@ -69,24 +70,11 @@ class FinalAnswer(BaseModel):
 
 class RAGState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
-    query: str
-    top_k: int
     model: str
     temperature: float
-    use_llm_grading: bool
-    memory: str
     thread_id: str
-    is_real_estate_query: bool
-    reject_reason: str
-    rewritten_query: str
-    nearest: List[Dict[str, Any]]
-    contexts: List[Dict[str, Any]]
-    graded_contexts: List[Dict[str, Any]]
-    route: str
-    final: Dict[str, Any]
     answer: str
     sources: List[Dict[str, Any]]
-    model: str
     confidence: float
 
 
@@ -562,10 +550,10 @@ def _fetch_top_k_by_keyword(query: str, top_k: int) -> List[Dict[str, Any]]:
     return [{"listing_chunk_id": r[0], "keyword_score": float(r[1])} for r in rows]
 
 
-def _hybrid_retrieve(query: str, top_k: int) -> List[Dict[str, Any]]:
+def _hybrid_retrieve(query: str, top_k: int, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     candidate_pool = max(48, top_k * 8)
-    filters = _extract_filters(query)
-    vec_hits = _fetch_top_k_by_vector(query, filters=filters, top_k=candidate_pool)
+    effective_filters = filters if filters is not None else _extract_filters(query)
+    vec_hits = _fetch_top_k_by_vector(query, filters=effective_filters, top_k=candidate_pool)
     kw_hits = _fetch_top_k_by_keyword(query, top_k=candidate_pool)
 
     fused_scores: Dict[int, float] = defaultdict(float)
@@ -589,11 +577,15 @@ def _hybrid_retrieve(query: str, top_k: int) -> List[Dict[str, Any]]:
     return _deterministic_rerank(query=query, fused_scores=fused_scores, rank_data=rank_data, top_k=top_k)
 
 
-async def _hybrid_retrieve_async(query: str, top_k: int) -> List[Dict[str, Any]]:
-    cache_key = _cache_key("hybrid", {"q": query, "k": top_k})
+async def _hybrid_retrieve_async(
+    query: str,
+    top_k: int,
+    filters: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    cache_key = _cache_key("hybrid", {"q": query, "k": top_k, "filters": filters or {}})
 
     async def _compute() -> List[Dict[str, Any]]:
-        return await asyncio.to_thread(_hybrid_retrieve, query, top_k)
+        return await asyncio.to_thread(_hybrid_retrieve, query, top_k, filters)
 
     return await _aget_or_set_cache(cache_key, 90, _compute)
 
@@ -617,6 +609,10 @@ def _load_contexts(nearest: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             }
         )
     return contexts
+
+
+async def _load_contexts_async(nearest: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(_load_contexts, nearest)
 
 
 async def _classify_query_node(state: RAGState) -> RAGState:
@@ -671,23 +667,22 @@ async def _rewrite_query_node(state: RAGState) -> RAGState:
         return {"rewritten_query": _ensure_constraints_in_rewrite(query, normalized_query)}
 
 
-async def _retrieve_node(state: RAGState) -> RAGState:
-    top_k = max(1, min(30, int(state.get("top_k") or DEFAULT_TOP_K)))
-    rewritten = state.get("rewritten_query") or state.get("query", "")
+AGENT_SYSTEM_PROMPT = (
+    "You are an intelligent Mumbai real-estate agent. "
+    "Use the search_property_listings tool to fetch listing candidates before answering listing requests. "
+    "Reason independently over tool results and choose the best matches for the user's constraints. "
+    "Return 3 to 10 best listings, explain briefly why each was selected, and format listing details in a markdown table. "
+    "For follow-up prompts, use conversation context from prior messages and then call the tool again with refined constraints."
+)
 
-    async def _nearest_runner(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-        return await _hybrid_retrieve_async(payload["q"], payload["k"])
 
-    async def _prefs_runner(payload: Dict[str, Any]) -> Dict[str, str]:
-        return await asyncio.to_thread(_extract_query_preferences, payload["q"])
-
-    parallel = RunnableParallel(
-        nearest=RunnableLambda(_nearest_runner),
-        prefs=RunnableLambda(_prefs_runner),
-    )
-    result = await parallel.ainvoke({"q": rewritten, "k": top_k})
-    contexts = await asyncio.to_thread(_load_contexts, result["nearest"])
-    return {"nearest": result["nearest"], "contexts": contexts}
+async def _agent_node(state: RAGState) -> RAGState:
+    llm = _chat_llm(state).bind_tools([search_property_listings])
+    messages = state.get("messages") or []
+    if not any(isinstance(m, SystemMessage) for m in messages):
+        messages = [SystemMessage(content=AGENT_SYSTEM_PROMPT), *messages]
+    response = await llm.ainvoke(messages)
+    return {"messages": [response]}
 
 
 async def _grade_documents_node(state: RAGState) -> RAGState:
@@ -961,28 +956,51 @@ async def _checkpointer_context():
 
 def _build_graph_definition():
     graph = StateGraph(RAGState)
-    graph.add_node("classify", _classify_query_node)
-    graph.add_node("rewrite_query", _rewrite_query_node)
-    graph.add_node("retrieve", _retrieve_node)
-    graph.add_node("grade_documents", _grade_documents_node)
-    graph.add_node("generate", _generate_node)
-    graph.add_node("fallback", _fallback_node)
-    graph.add_node("format_output", _format_output_node)
+    graph.add_node("agent", _agent_node)
+    graph.add_node("tools", ToolNode([search_property_listings]))
 
-    graph.set_entry_point("classify")
-    graph.add_conditional_edges("classify", _route_after_classify, {"rewrite_query": "rewrite_query", "fallback": "fallback"})
-    graph.add_edge("rewrite_query", "retrieve")
-    graph.add_edge("retrieve", "grade_documents")
-    graph.add_conditional_edges("grade_documents", _route_after_grading, {"generate": "generate", "fallback": "fallback"})
-    graph.add_edge("generate", "format_output")
-    graph.add_edge("fallback", "format_output")
-    graph.add_edge("format_output", END)
+    graph.set_entry_point("agent")
+    graph.add_conditional_edges("agent", tools_condition, {"tools": "tools", END: END})
+    graph.add_edge("tools", "agent")
 
     return graph
 
 
 GRAPH_DEFINITION = _build_graph_definition()
 RAG_WORKFLOW = GRAPH_DEFINITION.compile()
+
+
+def _extract_tool_contexts(messages: List[Any]) -> List[Dict[str, Any]]:
+    contexts: List[Dict[str, Any]] = []
+    for message in messages:
+        msg_type = getattr(message, "type", None) or (message.get("type") if isinstance(message, dict) else None)
+        if msg_type != "tool":
+            continue
+        content = getattr(message, "content", None) if not isinstance(message, dict) else message.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            parsed = json.loads(content)
+        except Exception:
+            continue
+        if isinstance(parsed, list):
+            contexts.extend([item for item in parsed if isinstance(item, dict)])
+    return contexts
+
+
+def _latest_ai_text(messages: List[Any]) -> str:
+    for message in reversed(messages):
+        msg_type = getattr(message, "type", None) or (message.get("type") if isinstance(message, dict) else None)
+        if msg_type != "ai":
+            continue
+        content = getattr(message, "content", None) if not isinstance(message, dict) else message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"
+            )
+    return ""
 
 
 async def run_rag(
@@ -995,17 +1013,20 @@ async def run_rag(
 ) -> RAGState:
     state: RAGState = {
         "messages": [HumanMessage(content=query)],
-        "query": query,
-        "top_k": top_k,
         "model": model,
         "temperature": temperature,
-        "memory": memory,
         "thread_id": thread_id,
     }
     config = {"configurable": {"thread_id": thread_id}}
     async with _checkpointer_context() as checkpointer:
         workflow = GRAPH_DEFINITION.compile(checkpointer=checkpointer) if checkpointer else RAG_WORKFLOW
-        return _to_plain_data(await workflow.ainvoke(state, config=config))
+        result = _to_plain_data(await workflow.ainvoke(state, config=config))
+        messages = result.get("messages") or []
+        answer = _latest_ai_text(messages) or "I couldn't find enough listing evidence to answer that reliably."
+        sources = _extract_tool_contexts(messages)
+        result["answer"] = answer
+        result["sources"] = sources
+        return result
 
 
 async def stream_rag_events(
@@ -1018,11 +1039,8 @@ async def stream_rag_events(
 ) -> AsyncIterator[Dict[str, Any]]:
     state: RAGState = {
         "messages": [HumanMessage(content=query)],
-        "query": query,
-        "top_k": top_k,
         "model": model,
         "temperature": temperature,
-        "memory": memory,
         "thread_id": thread_id,
     }
     config = {"configurable": {"thread_id": thread_id}}
@@ -1044,13 +1062,14 @@ async def stream_rag_events(
                 if delta:
                     emitted_tokens = True
                     yield {"type": "token", "delta": delta}
-            if event.get("event") == "on_chain_end" and event.get("name") == "format_output":
+            if event.get("event") == "on_chain_end" and event.get("name") == "agent":
                 maybe_state = event.get("data", {}).get("output") or {}
                 if isinstance(maybe_state, dict):
                     final_state = _to_plain_data(maybe_state)
 
-        answer = (final_state.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
-        sources = _to_plain_data(final_state.get("sources") or [])
+        messages = final_state.get("messages") or []
+        answer = (_latest_ai_text(messages) or "I couldn't find enough listing evidence to answer that reliably.").strip()
+        sources = _extract_tool_contexts(messages)
         if answer and not emitted_tokens:
             yield {"type": "token", "delta": answer}
         yield {"type": "final", "answer": answer, "sources": sources, "model": _safe_model(model)}
