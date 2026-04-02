@@ -1,11 +1,17 @@
 # apps/ingestion/pipeline.py
 import asyncio
+import sys
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import re
 import hashlib
 import logging
 import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from asgiref.sync import sync_to_async
 import multiprocessing
 import threading
 
@@ -131,11 +137,11 @@ def _async_cache_key(prefix: str, payload: str) -> str:
 
 
 async def _aget_or_set_pipeline_cache(cache_key: str, ttl_seconds: int, compute_fn):
-    cached = cache.get(cache_key)
+    cached = await sync_to_async(cache.get)(cache_key)
     if cached is not None:
         return cached
     value = await compute_fn()
-    cache.set(cache_key, value, timeout=ttl_seconds)
+    await sync_to_async(cache.set)(cache_key, value, timeout=ttl_seconds)
     return value
 
 def stream_chat_messages(file_obj):

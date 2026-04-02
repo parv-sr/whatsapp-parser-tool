@@ -98,7 +98,7 @@ DATABASES = {
         'USER': os.getenv("DB_USER", "postgres"),
         'PASSWORD': os.getenv("DB_PASS", "admin@2025"),
         'HOST': os.getenv("DB_HOST", "localhost"),
-        'PORT': os.getenv("DB_PORT", "5432"),
+        'PORT': os.getenv("DB_PORT", "6543"),
         'CONN_MAX_AGE': 30,
         'TEST': {
             'CONN_MAX_AGE': 0,
@@ -138,7 +138,7 @@ REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/1')
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASS = os.getenv("DB_PASS", "admin@2025")
 DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
+DB_PORT = os.getenv("DB_PORT", "6543")
 DB_NAME = os.getenv("DB_NAME", "whatsapp-parser-tool-db")
 
 ENCODED_DB_USER = quote_plus(DB_USER)

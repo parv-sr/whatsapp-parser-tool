@@ -55,28 +55,35 @@ The project is modularized into highly focused Django apps:
 ```bash
 git clone <your-repository-url>
 cd whatsapp-parser-tool
+```
 
 
 3. Install Dependencies
 Create a virtual environment and install the required packages:
 
-
+```bash
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
+```
+
 4. Database Setup
 Ensure PostgreSQL is running and create the database. Crucially, you must enable the vector extension.
-
+```sql
 CREATE DATABASE "whatsapp-parser-tool-db";
 \c "whatsapp-parser-tool-db"
 CREATE EXTENSION vector;
+```
+
 5. Environment Variables
 Create a .env file in the root directory and populate it with your local credentials:
 
 Code snippet
+```python
 DEBUG=True
 DJANGO_SECRET_KEY=your-super-secret-local-key
 OPENAI_API_KEY=sk-your-openai-api-key
+```
 
 # Database
 DB_NAME=whatsapp-parser-tool-db
@@ -106,14 +113,16 @@ Terminal 2: Redis Server
 redis-server
 Terminal 3: Celery Worker
 
+```bash
 celery -A config worker -l info --concurrency=4
+```
 🧪 Running Tests
 The project uses Django's standard TestCase combined with unittest.mock to mock OpenAI API calls to prevent billing charges during CI/CD.
 
 To run the test suite:
-
-
+```bash
 python manage.py test
+```
 Note: The test suite includes custom tearDown methods to safely close dangling asynchronous database connections created by LangGraph/asyncio, ensuring smooth teardowns of the test databases.
 
 🚢 Deployment
