@@ -1,169 +1,72 @@
 {% extends "base.html" %}
 
+{% block title %}Upload chats • WhatsApp Parser{% endblock %}
+
 {% block content %}
 <style>
-    /* Scoped styles for the upload form 
-       Using a glassmorphism look to match the modern vibe
-    */
-    .upload-wrapper {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        min-height: 60vh;
-        padding: 2rem;
-    }
-
-    .glass-card {
-        background: rgba(255, 255, 255, 0.05);
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
+    .upload-layout { max-width: 960px; margin: 0 auto; }
+    .hero-card { padding: 2rem; }
+    .hero-note { color: #a8bad9; }
+    .upload-zone {
+        border: 2px dashed rgba(148, 163, 184, .45);
         border-radius: 16px;
-        padding: 3rem;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-        max-width: 600px;
-        width: 100%;
+        padding: 2.2rem 1.4rem;
         text-align: center;
-    }
-
-    .glass-card h2 {
-        margin-bottom: 0.5rem;
-        font-weight: 800;
-        letter-spacing: -0.5px;
-        background: linear-gradient(to right, #fff, #a5f3fc);
-        background-clip: text;
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-    }
-
-    .glass-card p {
-        color: #94a3b8;
-        margin-bottom: 2rem;
-    }
-
-    form {
-        display: flex;
-        flex-direction: column;
-        gap: 1.5rem;
-    }
-
-    .file-upload-area {
-        border: 2px dashed rgba(255, 255, 255, 0.2);
-        border-radius: 12px;
-        padding: 3rem 1.5rem;
+        background: rgba(15, 23, 42, .35);
         cursor: pointer;
-        transition: all 0.2s ease;
         position: relative;
-        overflow: hidden;
+        transition: .2s ease;
     }
-
-    .file-upload-area:hover, .file-upload-area.dragover {
-        border-color: #38bdf8; /* sky-400 */
-        background: rgba(56, 189, 248, 0.05);
+    .upload-zone:hover, .upload-zone.dragover {
+        border-color: rgba(37, 211, 102, .85);
+        background: rgba(37, 211, 102, .1);
     }
-
-    .file-upload-text strong {
-        display: block;
-        font-size: 1.1rem;
-        color: #e2e8f0;
-        margin-bottom: 0.5rem;
+    .upload-zone input[type="file"] {
+        position: absolute; inset: 0; opacity: 0; cursor: pointer;
     }
-
-    .file-upload-text small {
-        color: #64748b;
-    }
-
-    /* Hide the actual input but keep it functional */
-    input[type="file"] {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        opacity: 0;
-        cursor: pointer;
-    }
-
-    button[type="submit"] {
-        background: var(--pico-primary-background, linear-gradient(135deg, #0066ff, #00aaff));
-        color: white;
-        border: none;
-        padding: 0.9rem 1rem;
-        font-weight: 600;
-        font-size: 1.1rem;
-        border-radius: 12px;
-        cursor: pointer;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(0, 102, 255, 0.4);
-    }
-
-    button[type="submit"]:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 10px 25px rgba(0, 102, 255, 0.5);
-    }
-
-    button[type="submit"]:active {
-        transform: translateY(-1px);
-    }
+    .file-preview { color: #8df6bd; font-size: .95rem; margin-top: .6rem; min-height: 1.3rem; }
 </style>
 
-<div class="upload-wrapper">
-    <article class="glass-card">
-        <h2>Upload WhatsApp Chats</h2>
-        <p>Select or drop your exported .txt files, or archives (.zip/.rar) containing one .txt chat export</p>
+<section class="upload-layout">
+    <div class="glass-card hero-card">
+        <h2 class="h3 mb-2">Upload WhatsApp chat exports</h2>
+        <p class="hero-note mb-4">Drag & drop <strong>.txt</strong> files or archives (<strong>.zip/.rar</strong>) containing exactly one text chat export.</p>
 
-        <form method="post" enctype="multipart/form-data" id="uploadForm">
-            {% csrf_token %}
-
-            <label for="files" class="file-upload-area" id="fileUploadArea">
-                <div class="file-upload-text">
-                    <strong>Click to upload or drop files here</strong>
-                    <small>.txt, .zip, .rar supported • Archives must contain exactly one .txt chat export</small>
-                    <div id="file-list" style="margin-top: 1rem; color: #4ade80; font-size: 0.95rem; font-weight: 600;"></div>
-                </div>
-                <input 
-                    type="file" 
-                    name="files" 
-                    id="files" 
-                    multiple 
-                    accept=".txt,.zip,.rar,text/plain,application/zip,application/x-rar-compressed" 
-                    required 
-                />
+        <form method="post" enctype="multipart/form-data" id="uploadForm" class="d-grid gap-3">
+             {% csrf_token %}
+            <label for="files" class="upload-zone" id="fileUploadArea">
+                <i class="bi bi-cloud-arrow-up-fill" style="font-size:2.2rem;color:#25d366"></i>
+                <div class="mt-2 fw-semibold">Click to select files or drop them here</div>
+                <small class="text-secondary">Supported: .txt, .zip, .rar</small>
+                <div id="file-list" class="file-preview"></div>
+                <input type="file" name="files" id="files" multiple accept=".txt,.zip,.rar,text/plain,application/zip,application/x-rar-compressed" required>
             </label>
-
-            <button type="submit">Start Processing</button>
+            <button type="submit" class="btn btn-success btn-lg"><i class="bi bi-lightning-charge-fill me-2"></i>Start upload now</button>
         </form>
-    </article>
-</div>
+    </div>
+</section>
 
 <script>
-document.getElementById('fileUploadArea').addEventListener('dragover', (e) => {
-    e.preventDefault();
-    e.currentTarget.classList.add('dragover');
-});
+    const area = document.getElementById('fileUploadArea');
+    const input = document.getElementById('files');
+    const list = document.getElementById('file-list');
 
-document.getElementById('fileUploadArea').addEventListener('dragleave', (e) => {
-    e.currentTarget.classList.remove('dragover');
-});
+    ['dragover', 'dragleave', 'drop'].forEach((eventName) => {
+        area.addEventListener(eventName, (e) => {
+            if (eventName !== 'dragleave') e.preventDefault();
+            area.classList.toggle('dragover', eventName === 'dragover');
+        });
+    });
 
-document.getElementById('fileUploadArea').addEventListener('drop', (e) => {
-    e.currentTarget.classList.remove('dragover');
-});
-
-const fileInput = document.getElementById('files');
-const fileList = document.getElementById('file-list');
-
-fileInput.addEventListener('change', (e) => {
-    const count = e.target.files.length;
-    if (count > 0) {
-        if (count === 1) {
-            fileList.textContent = `Selected: ${e.target.files[0].name}`;
+    input.addEventListener('change', (e) => {
+        const files = Array.from(e.target.files || []);
+        if (!files.length) {
+            list.textContent = '';
+        } else if (files.length === 1) {
+            list.textContent = `Selected: ${files[0].name}`;
         } else {
-            fileList.textContent = `Selected: ${count} files`;
+            list.textContent = `Selected: ${files.length} files`;
         }
-    } else {
-        fileList.textContent = '';
-    }
-});
+    });
 </script>
 {% endblock %}
