@@ -130,7 +130,13 @@ def construct_batch_prompt(messages: List[str]) -> str:
     for i, msg in enumerate(messages):
         # We use a relative index (0, 1, 2...) in the prompt, mapped back later
         # Truncate extremely long messages to avoid token overflow
-        safe_msg = msg[:3000] 
+        safe_msg = (
+            str(msg)
+            .replace('\x00', '')
+            .replace('\0', '')
+            .encode('utf-8', 'replace')
+            .decode('utf-8')
+        )[:3000]
         prompt += f"--- Message {i} ---\n{safe_msg}\n\n"
     return prompt
 
