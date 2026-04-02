@@ -7,17 +7,19 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from functools import lru_cache
 import sys
-from typing import Any, AsyncIterator, Dict, List, Optional, TypedDict
+from typing import Annotated, Any, AsyncIterator, Dict, List, Optional, TypedDict
 
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.core.cache import cache
 from django.db import connection
 from django.db import connections
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnableParallel
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 from apps.embeddings.vector_store import build_pg_filter, get_vectorstore, get_vectorstore_async
@@ -66,6 +68,7 @@ class FinalAnswer(BaseModel):
 
 
 class RAGState(TypedDict, total=False):
+    messages: Annotated[list[AnyMessage], add_messages]
     query: str
     top_k: int
     model: str
@@ -748,7 +751,17 @@ def _route_after_grading(state: RAGState) -> str:
 
 async def _generate_node(state: RAGState) -> RAGState:
     query = state.get("query", "")
-    memory = state.get("memory", "")
+    prior_messages = state.get("messages") or []
+    memory_lines: List[str] = []
+    for message in prior_messages[:-1]:
+        role = getattr(message, "type", "system").upper()
+        content = getattr(message, "content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"
+            )
+        memory_lines.append(f"{role}: {content}")
+    memory = "\n".join(memory_lines) or state.get("memory", "")
     graded_contexts = [ctx for ctx in state.get("graded_contexts", []) if (ctx.get("relevance_score") or 0) >= 7]
     snippet_blocks = []
     for idx, item in enumerate(graded_contexts, start=1):
@@ -857,7 +870,7 @@ async def _format_output_node(state: RAGState) -> RAGState:
         sources.append(normalized)
 
     answer = _compose_answer_html(state, answer_text, source_ids)
-    output: RAGState = {"answer": answer, "sources": sources}
+    output: RAGState = {"answer": answer, "sources": sources, "messages": [AIMessage(content=answer_text)]}
 
     model = final.get("model") or state.get("model")
     if isinstance(model, str) and model:
@@ -981,6 +994,7 @@ async def run_rag(
     thread_id: str = "default",
 ) -> RAGState:
     state: RAGState = {
+        "messages": [HumanMessage(content=query)],
         "query": query,
         "top_k": top_k,
         "model": model,
@@ -1003,6 +1017,7 @@ async def stream_rag_events(
     thread_id: str,
 ) -> AsyncIterator[Dict[str, Any]]:
     state: RAGState = {
+        "messages": [HumanMessage(content=query)],
         "query": query,
         "top_k": top_k,
         "model": model,
@@ -1015,21 +1030,29 @@ async def stream_rag_events(
     async with _checkpointer_context() as checkpointer:
         workflow = GRAPH_DEFINITION.compile(checkpointer=checkpointer) if checkpointer else RAG_WORKFLOW
         final_state: Dict[str, Any] = {}
+        emitted_tokens = False
         async for event in workflow.astream_events(state, config=config, version="v2"):
+            if event.get("event") == "on_chat_model_stream":
+                chunk = event.get("data", {}).get("chunk")
+                delta = ""
+                if chunk is not None:
+                    delta = getattr(chunk, "content", "") or ""
+                    if isinstance(delta, list):
+                        delta = "".join(
+                            part.get("text", "") for part in delta if isinstance(part, dict) and part.get("type") == "text"
+                        )
+                if delta:
+                    emitted_tokens = True
+                    yield {"type": "token", "delta": delta}
             if event.get("event") == "on_chain_end" and event.get("name") == "format_output":
                 maybe_state = event.get("data", {}).get("output") or {}
                 if isinstance(maybe_state, dict):
                     final_state = _to_plain_data(maybe_state)
 
-        if not final_state:
-            final_state = await run_rag(query, top_k, model, temperature, memory, thread_id)
-
         answer = (final_state.get("answer") or "I couldn't find enough listing evidence to answer that reliably.").strip()
         sources = _to_plain_data(final_state.get("sources") or [])
-        if answer:
-            chunk_size = 120
-            for i in range(0, len(answer), chunk_size):
-                yield {"type": "token", "delta": answer[i : i + chunk_size]}
+        if answer and not emitted_tokens:
+            yield {"type": "token", "delta": answer}
         yield {"type": "final", "answer": answer, "sources": sources, "model": _safe_model(model)}
 
 
