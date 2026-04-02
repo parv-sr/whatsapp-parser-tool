@@ -94,7 +94,8 @@ DB_PORT=5432
 
 # Redis
 REDIS_URL=redis://127.0.0.1:6379/1
-6. Run Migrations
+
+### 6. Run Migrations
 Apply the database migrations (this will set up the tables and the HNSW indexes for pgvector):
 
 
@@ -104,17 +105,17 @@ python manage.py migrate
 ### 7. Start the Services
 You need three terminal windows to run the full stack locally:
 
-# Terminal 1: Django Server
+#### Terminal 1: Django Server
 
 ```bash
 python manage.py runserver
 ```
 
-# Terminal 2: Redis Server
+#### Terminal 2: Redis Server
 
 redis-server
 
-# Terminal 3: Celery Worker
+#### Terminal 3: Celery Worker
 
 ```bash
 celery -A config worker -l info --concurrency=4
@@ -139,7 +140,7 @@ SSL forced redirects and secure cookies (SECURE_SSL_REDIRECT = True).
 Celery configured to use the Database URL as the broker with SSL mode enabled.
 Custom build.sh script to automate installation, static collection, and migrations during build pipelines.
 
-# To deploy:
+## To deploy:
 
 Connect your GitHub repository to your hosting provider.
 Set the Build Command: ./build.sh
