@@ -161,3 +161,11 @@ class DeduplicationTests(TestCase):
         self.assertEqual(dupe["in_batch"], 1)
         self.assertEqual(dupe["in_db"], 1)
         self.assertEqual(dupe["inserted"], 1)
+
+    def test_dedupe_hash_defaults_remain_backward_compatible(self):
+        base = _generate_dedupe_hash("db dupe text", "Alice")
+        explicit_empty = _generate_dedupe_hash("db dupe text", "Alice", "", "", "")
+        enriched = _generate_dedupe_hash("db dupe text", "Alice", "Bandra", "SALE", "OFFER")
+
+        self.assertEqual(base, explicit_empty)
+        self.assertNotEqual(base, enriched)

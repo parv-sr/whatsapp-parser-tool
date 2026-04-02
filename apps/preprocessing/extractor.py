@@ -24,8 +24,8 @@ except Exception:
 
 # --- CONFIGURATION ---
 # We pack ~15 messages per API call for maximum speed and efficiency.
-MESSAGES_PER_PACKET = 15 
-MAX_CONCURRENT_PACKETS = 3 # Process 3 packets (45 messages) concurrently per worker thread
+MESSAGES_PER_PACKET = int(os.getenv("MESSAGES_PER_PACKET", "15"))
+MAX_CONCURRENT_PACKETS = max(3, int(os.getenv("MAX_CONCURRENT_PACKETS", "6")))
 
 # --- Pydantic Schemas ---
 class PropertyListing(BaseModel):
