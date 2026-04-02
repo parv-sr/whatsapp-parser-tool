@@ -1,39 +1,18 @@
+from langchain_core.tools import tool
 import json
 
-from langchain_core.tools import tool
-
-
-
 @tool
-async def search_property_listings(
-    location: str = None,
-    transaction_type: str = None,
-    property_type: str = None,
-    bhk: float = None,
-    must_have_features: list[str] = None,
-) -> str:
-    """Search the real-estate listings database and return grounded candidates for property queries.
-
-    Call this tool whenever the user asks for properties (including follow-ups), so the answer is based on
-    retrieved listing evidence instead of memory-only generation. Pass all known constraints from the current
-    turn and conversation history (for example location, transaction type, property type, bhk, and required
-    features). The tool applies structured filters, retrieves matching listings, and returns JSON text that
-    the model can read, compare, and rank before responding.
+async def search_property_listings(search_query: str) -> str:
     """
-    filters: dict[str, object] = {}
-    if location:
-        filters["location"] = location
-    if transaction_type:
-        filters["transaction_type"] = transaction_type
-    if property_type:
-        filters["property_type"] = property_type
-    if bhk is not None:
-        filters["bhk"] = bhk
-    if must_have_features:
-        filters["must_have_features"] = must_have_features
-
+    Searches the database for real estate listings.
+    For follow-up queries, COMBINE the user's previous constraints (e.g., 'pet friendly') 
+    with their new constraints (e.g., 'in Bandra') into a single rich search phrase.
+    Example: "2 BHK apartment in Bandra West, pet friendly, furnished"
+    """
+    # Inline import prevents circular dependency crashes on boot
     from apps.core.rag_graph import _hybrid_retrieve_async, _load_contexts_async
-
-    nearest = await _hybrid_retrieve_async(query="", top_k=15, filters=filters)
+    
+    # We pass the rich query straight to your brilliant hybrid retriever!
+    nearest = await _hybrid_retrieve_async(query=search_query, top_k=15)
     contexts = await _load_contexts_async(nearest)
-    return json.dumps(contexts, ensure_ascii=False)
+    return json.dumps(contexts)

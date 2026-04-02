@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 import sys
 from typing import Annotated, Any, AsyncIterator, Dict, List, Optional, TypedDict
+from urllib.parse import quote_plus
 
 from asgiref.sync import sync_to_async
 from django.conf import settings
@@ -885,10 +886,18 @@ def _checkpoint_dsn() -> Optional[str]:
     db = connections["default"].settings_dict
     if db.get("ENGINE", "").endswith("sqlite3"):
         return None
+    
+    # Safely URL-encode the credentials to prevent @ symbol crashes
+    user = quote_plus(str(db.get('USER', '')))
+    password = quote_plus(str(db.get('PASSWORD', '')))
+    host = db.get('HOST') or 'localhost'
+    port = db.get('PORT') or 5432
+    name = quote_plus(str(db.get('NAME', '')))
+
     return (
         getattr(settings, "LANGGRAPH_CHECKPOINT_DSN", None)
         or db.get("OPTIONS", {}).get("dsn")
-        or f"postgresql://{db.get('USER')}:{db.get('PASSWORD')}@{db.get('HOST') or 'localhost'}:{db.get('PORT') or 5432}/{db.get('NAME')}"
+        or f"postgresql://{user}:{password}@{host}:{port}/{name}"
     )
 
 
