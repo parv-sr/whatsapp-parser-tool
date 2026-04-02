@@ -92,6 +92,9 @@ DB_PASS=admin@2025
 DB_HOST=localhost
 DB_PORT=5432
 
+## Schema:
+<img width="1615" height="815" alt="WPT-Schema" src="https://github.com/user-attachments/assets/91fff66c-3c2c-492a-a2ec-baa12bdd4ebd" />
+
 # Redis
 REDIS_URL=redis://127.0.0.1:6379/1
 
