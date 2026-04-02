@@ -4,12 +4,9 @@ from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
-from django.contrib.auth import get_user_model
 from django.test import TestCase
+from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
-from django.urls import reverse
-
-from apps.core.models import ChatMessage
 from apps.core import rag_graph
 
 
@@ -50,11 +47,63 @@ class RagGraphUnitTests(TestCase):
         self.assertIn('"_id": 10', content)
         self.assertIn("[/SNIPPET 1]", content)
 
-    def test_langgraph_pipeline_falls_back_when_no_relevant_contexts(self):
-        with patch("apps.core.rag_graph._hybrid_retrieve_async", new=AsyncMock(return_value=[])):
-            state = asyncio.run(rag_graph.run_rag("3bhk apartment in bkc", top_k=5))
+    def test_agent_routes_to_tool(self):
+        ai_with_tool_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call-1",
+                    "name": "search_property_listings",
+                    "args": {"query": "I want a 2BHK in Bandra"},
+                    "type": "tool_call",
+                }
+            ],
+        )
 
-        self.assertIn("couldn't find an exact match", state["answer"].lower())
+        fake_llm = AsyncMock()
+        fake_llm.bind_tools.return_value = fake_llm
+        fake_llm.ainvoke = AsyncMock(return_value=ai_with_tool_call)
+
+        with patch("apps.core.rag_graph._chat_llm", return_value=fake_llm):
+            state = asyncio.run(rag_graph._agent_node({"messages": [HumanMessage(content="I want a 2BHK in Bandra")]}))
+
+        messages = state["messages"]
+        self.assertIsInstance(messages[-1], AIMessage)
+        self.assertTrue(messages[-1].tool_calls)
+        self.assertEqual(messages[-1].tool_calls[0]["name"], "search_property_listings")
+
+    def test_agent_memory_followup(self):
+        async def _fake_ainvoke(messages):
+            joined = " ".join(getattr(msg, "content", "") for msg in messages if hasattr(msg, "content")).lower()
+            args = {"query": "pet friendly options in Andheri West"} if "pets" in joined and "andheri west" in joined else {"query": "andheri west"}
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call-2",
+                        "name": "search_property_listings",
+                        "args": args,
+                        "type": "tool_call",
+                    }
+                ],
+            )
+
+        fake_llm = AsyncMock()
+        fake_llm.bind_tools.return_value = fake_llm
+        fake_llm.ainvoke = AsyncMock(side_effect=_fake_ainvoke)
+        seeded_messages = [
+            HumanMessage(content="I need a place that allows pets"),
+            AIMessage(content="Got it, pet-friendly properties."),
+            HumanMessage(content="What about in Andheri West?"),
+        ]
+
+        with patch("apps.core.rag_graph._chat_llm", return_value=fake_llm):
+            state = asyncio.run(rag_graph._agent_node({"messages": seeded_messages}))
+
+        tool_args = state["messages"][-1].tool_calls[0]["args"]
+        serialized = str(tool_args).lower()
+        self.assertIn("pet", serialized)
+        self.assertIn("andheri west", serialized)
 
     def test_deterministic_rerank_top_k_stability_fixture(self):
         class FakeListing:
