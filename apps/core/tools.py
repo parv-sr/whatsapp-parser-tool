@@ -1,57 +1,39 @@
 import json
-from typing import Any, Dict, Optional
 
 from langchain_core.tools import tool
 
 
+
 @tool
 async def search_property_listings(
-    query: str,
-    location: Optional[str] = None,
-    transaction_type: Optional[str] = None,
-    property_type: Optional[str] = None,
-    min_price: Optional[int] = None,
-    max_price: Optional[int] = None,
-    bhk: Optional[float] = None,
-    top_k: int = 12,
+    location: str = None,
+    transaction_type: str = None,
+    property_type: str = None,
+    bhk: float = None,
+    must_have_features: list[str] = None,
 ) -> str:
-    """Search WhatsApp-derived real-estate listings with structured filters and return matching contexts.
+    """Search the real-estate listings database and return grounded candidates for property queries.
 
-    Use this tool whenever the user asks for property recommendations, follow-up refinements,
-    comparisons, or shortlist generation (for example: "same but in Bandra", "under 2 cr",
-    "2 bhk for rent", "show best options").
-
-    Inputs:
-    - query: natural-language search intent. Include conversational context in this value.
-    - location, transaction_type, property_type: optional hard filters.
-    - min_price, max_price, bhk: optional numeric constraints.
-    - top_k: number of retrieved candidates before final reasoning.
-
-    Output:
-    - JSON string of retrieved listing contexts. Each context includes listing id, normalized metadata,
-      and retrieval scores. The caller should reason over these contexts and select the best 3-10 matches.
+    Call this tool whenever the user asks for properties (including follow-ups), so the answer is based on
+    retrieved listing evidence instead of memory-only generation. Pass all known constraints from the current
+    turn and conversation history (for example location, transaction type, property type, bhk, and required
+    features). The tool applies structured filters, retrieves matching listings, and returns JSON text that
+    the model can read, compare, and rank before responding.
     """
-    from apps.core.rag_graph import _extract_filters, _hybrid_retrieve_async, _load_contexts_async
-
-    filters: Dict[str, Any] = _extract_filters(query)
-
+    filters: dict[str, object] = {}
     if location:
         filters["location"] = location
     if transaction_type:
-        filters["transaction_type"] = transaction_type.upper()
+        filters["transaction_type"] = transaction_type
     if property_type:
-        filters["property_type"] = property_type.upper()
-    if min_price is not None:
-        filters["min_price"] = int(min_price)
-    if max_price is not None:
-        filters["max_price"] = int(max_price)
+        filters["property_type"] = property_type
     if bhk is not None:
-        filters["bhk"] = float(bhk)
+        filters["bhk"] = bhk
+    if must_have_features:
+        filters["must_have_features"] = must_have_features
 
-    merged_query = query
-    if location and location.lower() not in query.lower():
-        merged_query = f"{query} in {location}"
+    from apps.core.rag_graph import _hybrid_retrieve_async, _load_contexts_async
 
-    nearest = await _hybrid_retrieve_async(merged_query, max(3, min(30, int(top_k))), filters=filters)
+    nearest = await _hybrid_retrieve_async(query="", top_k=15, filters=filters)
     contexts = await _load_contexts_async(nearest)
     return json.dumps(contexts, ensure_ascii=False)

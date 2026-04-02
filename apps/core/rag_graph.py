@@ -668,11 +668,13 @@ async def _rewrite_query_node(state: RAGState) -> RAGState:
 
 
 AGENT_SYSTEM_PROMPT = (
-    "You are an intelligent Mumbai real-estate agent. "
-    "Use the search_property_listings tool to fetch listing candidates before answering listing requests. "
-    "Reason independently over tool results and choose the best matches for the user's constraints. "
-    "Return 3 to 10 best listings, explain briefly why each was selected, and format listing details in a markdown table. "
-    "For follow-up prompts, use conversation context from prior messages and then call the tool again with refined constraints."
+    "You are an intelligent real estate agent. "
+    "You MUST use the search_property_listings tool to find properties. "
+    "For follow-up questions, combine the user's new request with their previous constraints from the conversation history "
+    "and pass the COMBINED constraints to the tool. "
+    "Review the tool results carefully before answering. "
+    "Output a markdown table containing between 3 and 10 of the best matches. "
+    "Below the table, briefly explain exactly WHY you selected these listings based on the user's specific constraints."
 )
 
 
@@ -993,13 +995,25 @@ def _latest_ai_text(messages: List[Any]) -> str:
         msg_type = getattr(message, "type", None) or (message.get("type") if isinstance(message, dict) else None)
         if msg_type != "ai":
             continue
+
+        tool_calls = getattr(message, "tool_calls", None) if not isinstance(message, dict) else message.get("tool_calls")
         content = getattr(message, "content", None) if not isinstance(message, dict) else message.get("content")
+
         if isinstance(content, str):
-            return content
+            if tool_calls and not content.strip():
+                continue
+            if content.strip():
+                return content
+            continue
+
         if isinstance(content, list):
-            return "".join(
+            text_content = "".join(
                 part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"
-            )
+            ).strip()
+            if tool_calls and not text_content:
+                continue
+            if text_content:
+                return text_content
     return ""
 
 
@@ -1022,7 +1036,7 @@ async def run_rag(
         workflow = GRAPH_DEFINITION.compile(checkpointer=checkpointer) if checkpointer else RAG_WORKFLOW
         result = _to_plain_data(await workflow.ainvoke(state, config=config))
         messages = result.get("messages") or []
-        answer = _latest_ai_text(messages) or "I couldn't find enough listing evidence to answer that reliably."
+        answer = _latest_ai_text(messages).strip()
         sources = _extract_tool_contexts(messages)
         result["answer"] = answer
         result["sources"] = sources
@@ -1068,7 +1082,7 @@ async def stream_rag_events(
                     final_state = _to_plain_data(maybe_state)
 
         messages = final_state.get("messages") or []
-        answer = (_latest_ai_text(messages) or "I couldn't find enough listing evidence to answer that reliably.").strip()
+        answer = _latest_ai_text(messages).strip()
         sources = _extract_tool_contexts(messages)
         if answer and not emitted_tokens:
             yield {"type": "token", "delta": answer}
