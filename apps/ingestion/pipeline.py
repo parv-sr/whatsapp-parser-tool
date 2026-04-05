@@ -207,6 +207,8 @@ def process_single_llm_batch(batch_data):
 
         texts_to_extract = []
         map_idx_to_chunk = {}
+        processed_chunks = []
+        duplicate_local_chunks = []
 
         # 1) local in-chat dedupe
         for chunk in chunks:
@@ -215,7 +217,7 @@ def process_single_llm_batch(batch_data):
                 texts_to_extract.append(chunk.raw_text)
             else:
                 chunk.status = "DUPLICATE_LOCAL"
-                chunk.save(update_fields=["status"])
+                duplicate_local_chunks.append(chunk)
                 tracker.add_in_chat(chunk.raw_text)
 
         if not texts_to_extract:
@@ -230,6 +232,7 @@ def process_single_llm_batch(batch_data):
             return {"chunk_count": 0, "dupe": tracker.as_dict()}
 
         listing_buffer = []
+        listing_candidates = []
         batch_seen_hashes = set()
 
         for res in results:
@@ -249,7 +252,7 @@ def process_single_llm_batch(batch_data):
 
             chunk.status = "PROCESSED"
             chunk.split_into = len(res.listings)
-            chunk.save(update_fields=["status", "split_into"])
+            processed_chunks.append(chunk)
 
             if res.is_irrelevant or not res.listings:
                 continue
@@ -274,10 +277,6 @@ def process_single_llm_batch(batch_data):
                 batch_seen_hashes.add(composite_hash)
 
                 # 3) in-db dedupe
-                if ListingChunk.objects.filter(composite_hash__in=[composite_hash, legacy_hash]).exists():
-                    tracker.add_in_db(composite_hash)
-                    continue
-
                 vector_text = f"{listing_data.cleaned_text} {listing_data.location} {listing_data.transaction_type}"
 
                 lc = ListingChunk(
@@ -293,7 +292,32 @@ def process_single_llm_batch(batch_data):
                     confidence=0.9,
                     status="ACTIVE",
                 )
-                listing_buffer.append(lc)
+                listing_candidates.append(
+                    {
+                        "composite_hash": composite_hash,
+                        "legacy_hash": legacy_hash,
+                        "listing_chunk": lc,
+                    }
+                )
+
+        if duplicate_local_chunks:
+            RawMessageChunk.objects.filter(id__in=[c.id for c in duplicate_local_chunks]).update(status="DUPLICATE_LOCAL")
+
+        if processed_chunks:
+            RawMessageChunk.objects.bulk_update(processed_chunks, ["status", "split_into"], batch_size=500)
+
+        if listing_candidates:
+            all_hashes = {entry["composite_hash"] for entry in listing_candidates}
+            all_hashes.update(entry["legacy_hash"] for entry in listing_candidates)
+            existing_hashes = set(
+                ListingChunk.objects.filter(composite_hash__in=all_hashes).values_list("composite_hash", flat=True)
+            )
+
+            for entry in listing_candidates:
+                if entry["composite_hash"] in existing_hashes or entry["legacy_hash"] in existing_hashes:
+                    tracker.add_in_db(entry["composite_hash"])
+                    continue
+                listing_buffer.append(entry["listing_chunk"])
 
         if listing_buffer:
             with transaction.atomic():
