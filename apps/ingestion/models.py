@@ -1,5 +1,4 @@
 from django.db import models
-from django.contrib.postgres.fields import JSONField
 from django.conf import settings
 
 class RawFile(models.Model):
@@ -16,6 +15,7 @@ class RawFile(models.Model):
     process_started_at = models.DateTimeField(null=True, blank=True)
     process_finished_at = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True, null=True)
+    dedupe_stats = models.JSONField(default=dict, blank=True)
 
     status = models.CharField(
         max_length=20,
