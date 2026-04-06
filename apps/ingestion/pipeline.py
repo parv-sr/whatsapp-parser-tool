@@ -78,7 +78,9 @@ def _append_runtime_log(raw_file_id: int, level: str, message: str) -> None:
 
 
 def _store_dedupe_stats(raw_file_id: int, tracker: DupeTracker) -> None:
-    cache.set(_dedupe_stats_key(raw_file_id), tracker.as_dict(), timeout=24 * 3600)
+    stats_payload = tracker.as_dict()
+    cache.set(_dedupe_stats_key(raw_file_id), stats_payload, timeout=24 * 3600)
+    RawFile.objects.filter(pk=raw_file_id).update(dedupe_stats=stats_payload)
 
 
 def _remove_from_active_processing(raw_file_id: int) -> None:

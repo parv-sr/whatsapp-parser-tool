@@ -53,6 +53,10 @@ def _progress_payload_for_file(raw_file):
     else:
         stage, stage_label = 0, "Failed"
 
+    dedupe_stats = cache.get(f"dedupe_stats:{raw_file.id}", None)
+    if dedupe_stats is None:
+        dedupe_stats = raw_file.dedupe_stats or {}
+
     payload = {
         "id": raw_file.id,
         "progress": progress,
@@ -61,7 +65,7 @@ def _progress_payload_for_file(raw_file):
         "stage_label": stage_label,
         "error": raw_file.notes,
         "runtime_logs": cache.get(f"runtime_logs:{raw_file.id}", []) or [],
-        "dedupe_stats": cache.get(f"dedupe_stats:{raw_file.id}", {}) or {},
+        "dedupe_stats": dedupe_stats,
     }
     log.debug("progress payload generated: %s", payload)
     return payload

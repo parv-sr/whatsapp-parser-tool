@@ -172,7 +172,7 @@ CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS = True
 IS_WINDOWS = os.name == "nt"
 CELERY_WORKER_POOL = os.getenv("CELERY_WORKER_POOL", "threads" if IS_WINDOWS else "prefork")
 CELERY_WORKER_CONCURRENCY = int(
-    os.getenv("CELERY_WORKER_CONCURRENCY", "4" if IS_WINDOWS else "16")
+    os.getenv("CELERY_WORKER_CONCURRENCY", "4")
 )
 # Prevent worker from prefetching too many tasks (fair distribution)
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
