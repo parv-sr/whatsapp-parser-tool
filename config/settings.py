@@ -166,8 +166,6 @@ CELERY_BROKER_POOL_LIMIT = int(os.getenv("CELERY_BROKER_POOL_LIMIT", "2"))
 CELERY_BROKER_HEARTBEAT = int(os.getenv("CELERY_BROKER_HEARTBEAT", "10"))
 CELERY_BROKER_TRANSPORT_OPTIONS = {
     "pool_pre_ping": True,
-    "polling_interval": 5.0,
-    "visibility_timeout": 3600,
 }
 CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS = True
 
