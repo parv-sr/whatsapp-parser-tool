@@ -5,6 +5,7 @@ ALLOWED_TAGS = [
     "p", "br",
     "strong", "b", "em", "i",
     "ul", "ol", "li",
+    "h4",
 ]
 
 ALLOWED_ATTRIBUTES = {

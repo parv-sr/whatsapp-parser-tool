@@ -2,8 +2,11 @@
 # Exit on error
 set -o errexit
 
-pip install -r requirements.txt
+echo "Installing dependencies..."
+pip install --no-cache-dir -r requirements.txt
 
+echo "Collecting static files..."
 python manage.py collectstatic --no-input
 
+echo "Running database migrations..."
 python manage.py migrate

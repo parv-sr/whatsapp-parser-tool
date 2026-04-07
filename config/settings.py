@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 import ssl
 import sys
 from urllib.parse import quote_plus
+import sys
+from urllib.parse import quote_plus
 
 load_dotenv()
 
@@ -251,11 +253,7 @@ OPENAI_CHAT_MODELS = [
 # --- SECURITY & HTTPS ---
 
 # Always needed for Render/Vercel
-if not DEBUG:
-    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-else:
-    SECURE_PROXY_SSL_HEADER = None
-
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 CSRF_TRUSTED_ORIGINS = [
     "https://whatsapp-parser-tool.onrender.com",
