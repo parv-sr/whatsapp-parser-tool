@@ -2,15 +2,19 @@
 # Exit on error
 set -o errexit
 
-echo "Installing dependencies..."
-pip install --no-cache-dir -r requirements.txt
+echo "Installing Rust..."
 
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+source "$HOME/.cargo/env"
+
+echo "Compiling Rust Parser..."
+cd rust_parser/whatsapp-parser
 cargo build --release
+cd ../..
 
-cd rust_parser/whatsapp-parser && cargo build --release && \
-cd /app && mkdir -p /app/bin && \
-cp rust_parser/whatsapp-parser/target/release/whatsapp-parser /app/bin/whatsapp-parser && \
-chmod +x /app/bin/whatsapp-parser
+echo "Installing Python dependencies..."
+pip install --no-cache-dir -r requirements.txt
 
 echo "Collecting static files..."
 python manage.py collectstatic --no-input
