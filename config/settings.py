@@ -256,7 +256,10 @@ OPENAI_CHAT_MODELS = [
 # --- SECURITY & HTTPS ---
 
 # Always needed for Render/Vercel
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+else:
+    SECURE_PROXY_SSL_HEADER = None
 
 CSRF_TRUSTED_ORIGINS = [
     "https://whatsapp-parser-tool.onrender.com",
