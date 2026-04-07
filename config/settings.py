@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'django.contrib.postgres',
+    'storages',
     'pgvector',
     'django_celery_results',
     'apps.core',
@@ -255,7 +256,10 @@ OPENAI_CHAT_MODELS = [
 # --- SECURITY & HTTPS ---
 
 # Always needed for Render/Vercel
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+else:
+    SECURE_PROXY_SSL_HEADER = None
 
 CSRF_TRUSTED_ORIGINS = [
     "https://whatsapp-parser-tool.onrender.com",
@@ -300,3 +304,21 @@ if os.getenv("SKIP_MIGRATIONS", "False") == "True":
         for app in INSTALLED_APPS 
         if app.split('.')[-1] != 'pgvector'
     }
+
+# --- CLOUD STORAGE (AWS S3 / SUPABASE) ---
+# Only use cloud storage in production, use local for debugging
+if not DEBUG:
+    # Supabase S3 Compatible settings
+    AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL") 
+    AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME", "whatsapp-parser-media-bucket")
+    
+    AWS_S3_REGION_NAME = os.getenv("AWS_S3_REGION_NAME", "ap-south-1")
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_DEFAULT_ACL = 'private'
+    
+    # Tell Django to use S3 for file uploads
+    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+else:
+    # Local Development Fallback
+    MEDIA_URL = '/media/'
+    MEDIA_ROOT = BASE_DIR / 'media'
