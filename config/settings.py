@@ -92,50 +92,6 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Uses Environment variables if available (Prod), falls back to localhost defaults (Dev)
 
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv("DB_NAME", "whatsapp-parser-tool-db"),
-        'USER': os.getenv("DB_USER", "postgres"),
-        'PASSWORD': os.getenv("DB_PASS", "admin@2025"),
-        'HOST': os.getenv("DB_HOST", "localhost"),
-        'PORT': os.getenv("DB_PORT", "6543"),
-        'CONN_MAX_AGE': 30,
-        'TEST': {
-            'CONN_MAX_AGE': 0,
-        },
-        'DISABLE_SERVER_SIDE_CURSORS': True,
-    }
-}
-
-
-"""
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'whatsapp-parser-tool-db',
-        'USER': 'postgres',
-        'PASSWORD': 'admin@2025',
-        'HOST': 'localhost',
-        'PORT': '5432',
-    }
-}
-"""
-
-
-# Add SSL options only if we are in Production/Remote DB context
-if not DEBUG and os.getenv("DB_HOST") not in ['localhost', '127.0.0.1']:
-    DATABASES['default']['OPTIONS'] = {
-        'sslmode': 'require',
-        'options': '-c search_path=public',
-    }
-
-
-# --- REDIS & CELERY CONFIGURATION ---
-
-REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/1')
-
-
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASS = os.getenv("DB_PASS", "admin@2025")
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -147,13 +103,41 @@ ENCODED_DB_PASS = quote_plus(DB_PASS)
 ENCODED_DB_HOST = quote_plus(DB_HOST)
 ENCODED_DB_NAME = quote_plus(DB_NAME)
 
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': DB_NAME,
+        'USER': DB_USER,
+        'PASSWORD': DB_PASS,
+        'HOST': DB_HOST,
+        'PORT': DB_PORT,
+        'CONN_MAX_AGE': 30,
+        'TEST': {
+            'CONN_MAX_AGE': 0,
+        },
+        'DISABLE_SERVER_SIDE_CURSORS': True,
+    }
+}
+
+is_remote_db = DB_HOST not in ['localhost', '127.0.0.1']
+
 CELERY_BROKER_URL = (
     f"sqlalchemy+postgresql://{ENCODED_DB_USER}:{ENCODED_DB_PASS}"
     f"@{ENCODED_DB_HOST}:{DB_PORT}/{ENCODED_DB_NAME}"
 )
+    
+CELERY_BROKER_PORT = "5432" if is_remote_db else DB_PORT
 
+# Add SSL options only if we are in Production/Remote DB context
 if not DEBUG and DB_HOST not in ['localhost', '127.0.0.1']:
+    DATABASES['default']['OPTIONS'] = {
+        'sslmode': 'require',
+        'options': '-c search_path=public',
+    }
     CELERY_BROKER_URL += '?sslmode=require'
+
+
 
 
 #CELERY_BROKER_URL = 'django://'
@@ -162,13 +146,24 @@ CELERY_BROKER_USE_SSL = False
 CELERY_REDIS_BACKEND_USE_SSL = False
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BROKER_CONNECTION_MAX_RETRIES = None
-CELERY_BROKER_CONNECTION_TIMEOUT = int(os.getenv("CELERY_BROKER_CONNECTION_TIMEOUT", "30"))
-CELERY_BROKER_POOL_LIMIT = int(os.getenv("CELERY_BROKER_POOL_LIMIT", "2"))
-CELERY_BROKER_HEARTBEAT = int(os.getenv("CELERY_BROKER_HEARTBEAT", "10"))
+CELERY_BROKER_CONNECTION_TIMEOUT = 30
+CELERY_BROKER_POOL_LIMIT = 2
+CELERY_BROKER_HEARTBEAT = 10
 CELERY_BROKER_TRANSPORT_OPTIONS = {
-    "pool_pre_ping": True,
+    "pool_pre_ping": True,        # Verify connection before using it
+    "pool_recycle": 1800,         # Recycle connections every 30 minutes
+    "pool_timeout": 30,           # Wait 30s for a connection from the pool
+    "connect_args": {
+        "connect_timeout": 10,    # Give up on connecting after 10 seconds (prevents hanging)
+        "keepalives": 1,          # Turn on TCP keepalives
+        "keepalives_idle": 60,    # Seconds of idle time before sending keepalive
+        "keepalives_interval": 10,# Seconds between keepalive probes
+        "keepalives_count": 5,    # Number of failed probes before dropping connection
+    }
 }
 CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS = True
+CELERY_RETRY_BACKOFF = True
+CELERY_RETRY_BACKOFF_MAX = 30
 
 IS_WINDOWS = os.name == "nt"
 CELERY_WORKER_POOL = os.getenv("CELERY_WORKER_POOL", "threads" if IS_WINDOWS else "prefork")
@@ -311,6 +306,8 @@ if not DEBUG:
     # Supabase S3 Compatible settings
     AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL") 
     AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME", "whatsapp-parser-media-bucket")
+    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+    AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY")
     
     AWS_S3_REGION_NAME = os.getenv("AWS_S3_REGION_NAME", "ap-south-1")
     AWS_S3_FILE_OVERWRITE = False
