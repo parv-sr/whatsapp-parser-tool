@@ -16,14 +16,13 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         
-        # --- THIS IS WHERE YOU HARDCODE YOUR TABLE LIST ---
-        # Add or remove table names from this list as needed.
         tables_to_truncate = [
             "ingestion_rawfile",
             "ingestion_rawmessagechunk",
             "preprocessing_embeddingrecord",
             "preprocessing_listingchunk",
             "preprocessing_preprocessaudit",
+            "langchain_pg_embedding"
         ]
         # ----------------------------------------------------
 

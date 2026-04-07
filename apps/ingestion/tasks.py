@@ -2,6 +2,7 @@
 from celery import shared_task
 from django.db import close_old_connections
 from django.core.cache import cache
+from django.core.files.storage import default_storage
 
 import logging
 from time import sleep  # For race condition handling
@@ -41,10 +42,18 @@ def process_file_task(self, file_id):
         log.info("Task entering pipeline for file_id=%s", file_id)        
         process_file_in_background(file_id)
         log.info("Task pipeline finished for file_id=%s", file_id)
+
+        try:
+            current_instance = RawFile.objects.get(pk=file_id)
+            file_path = current_instance.file.path
+            default_storage.delete(file_path)
+            log.info(f"Successfully deleted ephemeral file: {file_path}")
+        except Exception as e:
+            log.warning(f"Failed to delete ephemeral file: {e}")
+            
         
     except Exception as e:
         log.exception(f"Celery task failed for file_id={file_id}: {e}")
-        # We re-raise to ensure Celery records the failure or retries
         raise
     finally:
         close_old_connections()
