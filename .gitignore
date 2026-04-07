@@ -7,3 +7,7 @@ raw_chats/
 scripts/
 data/
 render_start.sh
+rust_parser/.sixth
+rust_parser/whatsapp-parser/target/
+rust_parser/whatsapp-parser/*.rs.bk
+
