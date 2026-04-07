@@ -2,8 +2,9 @@ use clap::Parser;
 use regex::Regex;
 use serde::Serialize;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Parser)]
 #[command(author, version, about = "Fast WhatsApp chat parser")]
@@ -12,24 +13,24 @@ struct Args {
     input: PathBuf,
 
     #[arg(short, long, default_value = "-")]
-    output: String,  // "-" = stdout
+    output: String,
 }
 
 #[derive(Serialize)]
 struct ParsedMessage {
-    message_start: Option<String>,  // ISO datetime or null
+    date_raw: Option<String>,
+    time_raw: Option<String>,
     sender: Option<String>,
     raw_text: String,
     cleaned_text: String,
-    status: String,  // "NEW" | "IGNORED" | "DUPLICATE_LOCAL"
+    status: String,
 }
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
 
-    // Your exact HEADER_REGEX (ported 1:1)
     let header_re = Regex::new(
-        r"(?x)
+        r"(?mix)
         ^[\u200E\u200F\u202A\u202B\u202C\u202D\u202E\s]*
         (?:\[)?
         (?P<date>\d{1,2}/\d{1,2}/\d{2,4})
@@ -38,13 +39,22 @@ fn main() -> io::Result<()> {
         (?:\])?
         [\s\-–—:]*
         (?P<sender>[^:\n\r]{1,200}?)\s*:\s*
-        "
-    ).unwrap();
+        ",
+    )
+    .unwrap();
 
-    let system_re = Regex::new(r"(?i)(end-to-end encrypted|message deleted|joined using|left the group|created group|changed the subject|<media omitted>)").unwrap();
+    let system_re = Regex::new(
+        r"(?i)(end-to-end encrypted|message deleted|joined using|left the group|created group|changed the subject|<media omitted>)",
+    )
+    .unwrap();
+    let emoji_re = Regex::new(r"\p{So}|\p{Sk}|\p{Cf}").unwrap();
+    let space_re = Regex::new(r"[ \t]+").unwrap();
 
-    let input_file = File::open(&args.input)?;
-    let reader = BufReader::new(input_file);
+    let mut text = String::new();
+    File::open(&args.input)?.read_to_string(&mut text)?;
+    text = normalize_whitespace(&text, &space_re);
+
+    let matches: Vec<_> = header_re.find_iter(&text).collect();
 
     let mut output: Box<dyn Write> = if args.output == "-" {
         Box::new(io::stdout())
@@ -52,21 +62,18 @@ fn main() -> io::Result<()> {
         Box::new(File::create(&args.output)?)
     };
 
-    let mut lines = reader.lines();
-    let text: String = lines.by_ref().map_while(Result::ok).collect::<Vec<_>>().join("\n");
-
-    // Your exact splitting logic
-    let matches: Vec<_> = header_re.find_iter(&text).collect();
-
     if matches.is_empty() {
-        // fallback for files with no headers
-        writeln!(output, "{}", serde_json::to_string(&ParsedMessage {
-            message_start: None,
+        let cleaned = clean_block(&text, &header_re, &system_re, &emoji_re, &space_re);
+        let status = if cleaned.is_empty() { "IGNORED" } else { "NEW" };
+        let msg = ParsedMessage {
+            date_raw: None,
+            time_raw: None,
             sender: None,
-            raw_text: text.clone(),
-            cleaned_text: clean_block(&text, &system_re),
-            status: "NEW".to_string(),
-        })?)?;
+            raw_text: text,
+            cleaned_text: cleaned,
+            status: status.to_string(),
+        };
+        writeln!(output, "{}", serde_json::to_string(&msg)?)?;
         return Ok(());
     }
 
@@ -77,23 +84,24 @@ fn main() -> io::Result<()> {
         } else {
             text.len()
         };
+        let block = text[start..end].trim();
 
-        let block = &text[start..end].trim();
+        let (date_raw, time_raw, sender) = if let Some(caps) = header_re.captures(block) {
+            (
+                caps.name("date").map(|d| d.as_str().to_string()),
+                caps.name("time").map(|t| t.as_str().to_string()),
+                caps.name("sender").map(|s| s.as_str().trim().to_string()),
+            )
+        } else {
+            (None, None, None)
+        };
 
-        let caps = header_re.captures(block).unwrap();
-        let date = caps.name("date").map(|m| m.as_str().to_string());
-        let time = caps.name("time").map(|m| m.as_str().to_string());
-        let sender = caps.name("sender").map(|m| m.as_str().trim().to_string());
-
-        let cleaned = clean_block(block, &system_re);
-
+        let cleaned = clean_block(block, &header_re, &system_re, &emoji_re, &space_re);
         let status = if cleaned.is_empty() { "IGNORED" } else { "NEW" };
 
         let msg = ParsedMessage {
-            message_start: date.and_then(|d| {
-                // simple ISO conversion (you can expand with chrono if needed)
-                Some(format!("{} {}", d, time.as_deref().unwrap_or("")))
-            }),
+            date_raw,
+            time_raw,
             sender,
             raw_text: block.to_string(),
             cleaned_text: cleaned,
@@ -106,31 +114,43 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn clean_block(block: &str, system_re: &Regex) -> String {
-    let mut cleaned = block.to_string();
+fn normalize_whitespace(s: &str, space_re: &Regex) -> String {
+    let mut t = s.nfkc().collect::<String>();
+    t = t
+        .replace('\u{00A0}', " ")
+        .replace('\u{202F}', " ")
+        .replace('\u{200B}', "")
+        .replace('\u{200E}', "")
+        .replace('\u{200F}', "");
+    space_re.replace_all(&t, " ").to_string()
+}
 
-    // emoji stripping (Rust regex handles this very fast)
-    let emoji_re = Regex::new(r"[\p{So}\p{Sk}\p{Cf}]").unwrap();
-    cleaned = emoji_re.replace_all(&cleaned, " ").into_owned();
-
-    // normalize whitespace (your exact logic)
-    cleaned = cleaned.replace(['\u{00A0}', '\u{202F}'], " ")
-                     .replace(['\u{200B}', '\u{200E}', '\u{200F}'], "");
-
-    cleaned = regex::Regex::new(r"[ \t]+").unwrap().replace_all(&cleaned, " ").into_owned();
-
-    // remove header part
-    if let Some(m) = regex::Regex::new(r"^.*?:\s*").unwrap().find(&cleaned) {
-        cleaned = cleaned[m.end()..].trim().to_string();
+fn clean_block(
+    block: &str,
+    header_re: &Regex,
+    system_re: &Regex,
+    emoji_re: &Regex,
+    space_re: &Regex,
+) -> String {
+    if block.is_empty() {
+        return String::new();
     }
 
-    // remove system lines
-    cleaned = cleaned.lines()
+    let mut cleaned = emoji_re.replace_all(block, " ").to_string();
+    cleaned = normalize_whitespace(&cleaned, space_re);
+
+    if let Some(m) = header_re.find(&cleaned) {
+        if m.start() == 0 {
+            cleaned = cleaned[m.end()..].trim().to_string();
+        }
+    }
+
+    cleaned
+        .lines()
         .filter(|line| !system_re.is_match(line.trim()))
+        .map(str::trim_end)
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
-        .to_string();
-
-    cleaned
+        .to_string()
 }
