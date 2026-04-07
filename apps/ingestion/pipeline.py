@@ -38,12 +38,17 @@ try:
 except ImportError:
     get_batch_embeddings = None
 
+from config import settings
+
 log = logging.getLogger(__name__)
 
 # --- CONFIGURATION ---
 BATCH_SIZE = 1000
 NUM_CORES = multiprocessing.cpu_count()
-RUST_PARSER_BIN = os.getenv("WHATSAPP_PARSER_BIN", "/app/bin/whatsapp-parser")
+RUST_PARSER_BIN = os.path.join(
+    settings.BASE_DIR, 
+    "rust_parser", "whatsapp-parser", "target", "release", "whatsapp-parser.exe"
+)
 
 LLM_BATCH_SIZE = 60
 MAX_WORKERS = max(4, int(os.getenv("INGESTION_MAX_WORKERS", "6")))
