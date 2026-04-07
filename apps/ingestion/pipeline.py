@@ -45,10 +45,7 @@ log = logging.getLogger(__name__)
 # --- CONFIGURATION ---
 BATCH_SIZE = 1000
 NUM_CORES = multiprocessing.cpu_count()
-RUST_PARSER_BIN = os.path.join(
-    settings.BASE_DIR, 
-    "rust_parser", "whatsapp-parser", "target", "release", "whatsapp-parser.exe"
-)
+RUST_PARSER_BIN = os.getenv("WHATSAPP_PARSER_BIN", "/app/bin/whatsapp-parser")
 
 LLM_BATCH_SIZE = 60
 MAX_WORKERS = max(4, int(os.getenv("INGESTION_MAX_WORKERS", "6")))
@@ -495,14 +492,24 @@ def _process_file_in_background_sync(raw_file_id: int):
         chunk_buffer = []
         all_chunk_ids = []
         parser_used = "rust"
+        rust_rows_seen: int = 0
 
         try:
             for msg_data in iter_rust_parsed_messages(raw_file):
                 if _cancel_requested(raw_file_id):
                     raise RuntimeError("CANCELLED BY USER")
+                rust_rows_seen += 1
 
-                rt = msg_data.get("cleaned_text") or ""
-                if not rt or len(rt) < 15 or JUNK_RE.search(rt) or not KEYWORDS_RE.search(rt):
+                cleaned_rt = (msg_data.get("cleaned_text") or "").strip()
+                raw_rt = (msg_data.get("raw_text") or "").strip()
+                rt_for_filter = cleaned_rt or raw_rt
+
+                if (
+                    not rt_for_filter
+                    or len(rt_for_filter) < 15
+                    or JUNK_RE.search(rt_for_filter)
+                    or not KEYWORDS_RE.search(rt_for_filter)
+                ):
                     continue
 
                 parsed_dt = _parse_whatsapp_datetime(msg_data.get("date_raw"), msg_data.get("time_raw"))
@@ -518,8 +525,8 @@ def _process_file_in_background_sync(raw_file_id: int):
                         rawfile=raw_file,
                         message_start=ts,
                         sender=msg_data.get("sender"),
-                        raw_text=(msg_data.get("raw_text") or "")[:10000],
-                        cleaned_text=rt,
+                        raw_text=raw_rt[:10000],
+                        cleaned_text=cleaned_rt[:10000] if cleaned_rt else raw_rt[:10000],
                         status="PENDING",
                         user=getattr(raw_file, "owner", None),
                     )
@@ -532,6 +539,71 @@ def _process_file_in_background_sync(raw_file_id: int):
         except FileNotFoundError:
             parser_used = "python-fallback"
             _append_runtime_log(raw_file_id, "warning", f"Rust parser binary not found at {RUST_PARSER_BIN}. Using Python fallback parser.")
+            f = None
+            should_close = False
+            if hasattr(raw_file.file, "open"):
+                raw_file.file.open("rb")
+                f = raw_file.file
+                should_close = True
+            elif hasattr(raw_file.file, "path") and os.path.exists(raw_file.file.path):
+                f = open(raw_file.file.path, "rb")
+                should_close = True
+            else:
+                raise FileNotFoundError("Could not open file: Storage backend does not support direct access.")
+
+            try:
+                for msg_data in stream_chat_messages(f):
+                    if _cancel_requested(raw_file_id):
+                        raise RuntimeError("CANCELLED BY USER")
+                    rt = msg_data["text"]
+                    if not rt or len(rt) < 15 or JUNK_RE.search(rt) or not KEYWORDS_RE.search(rt):
+                        continue
+
+                    ts = None
+                    if msg_data["timestamp"]:
+                        try:
+                            ts = timezone.make_aware(msg_data["timestamp"])
+                        except Exception:
+                            ts = None
+
+                    chunk_buffer.append(
+                        RawMessageChunk(
+                            rawfile=raw_file,
+                            message_start=ts,
+                            sender=msg_data["sender"],
+                            raw_text=rt,
+                            cleaned_text=rt,
+                            status="PENDING",
+                            user=getattr(raw_file, "owner", None),
+                        )
+                    )
+
+                    if len(chunk_buffer) >= BATCH_SIZE:
+                        objs = RawMessageChunk.objects.bulk_create(chunk_buffer)
+                        all_chunk_ids.extend([o.id for o in objs])
+                        chunk_buffer = []
+            finally:
+                if should_close and f:
+                    f.close()
+
+            if chunk_buffer:
+                objs = RawMessageChunk.objects.bulk_create(chunk_buffer)
+                all_chunk_ids.extend([o.id for o in objs])
+                chunk_buffer = []
+
+            if rust_rows_seen == 0:
+                parser_used = "python-fallback-rust-empty-output"
+                _append_runtime_log(raw_file_id, "warning", "Rust parser returned 0 message rows. Falling back to Python parser.")
+                raise FileNotFoundError("Rust parser produced zero rows")
+
+            if not all_chunk_ids:
+                parser_used = "python-fallback-rust-zero-candidates"
+                _append_runtime_log(raw_file_id, "warning", "Rust parser produced rows but 0 candidates after filtering. Falling back to Python parser.")
+                raise FileNotFoundError("Rust parser produced zero candidates")
+        except FileNotFoundError:
+            if parser_used == "rust":
+                parser_used = "python-fallback"
+                _append_runtime_log(raw_file_id, "warning", f"Rust parser binary not found at {RUST_PARSER_BIN}. Using Python fallback parser.")
             f = None
             should_close = False
             if hasattr(raw_file.file, "open"):
