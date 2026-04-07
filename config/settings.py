@@ -8,6 +8,8 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 import ssl
+import sys
+from urllib.parse import quote_plus
 
 load_dotenv()
 
@@ -22,12 +24,14 @@ SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-fallback-dev-key")
 # FIX: Compare String to String. "True" == "True" is True.
 DEBUG = os.getenv("DEBUG", "False") == "True"
 
+
 ALLOWED_HOSTS = [
     'whatsapp-parser-tool.onrender.com',
+    'whatsapp-parser-tool-t838.onrender.com',
     'bandrahomes.in',
     'www.bandrahomes.in', 
     'localhost', 
-    '127.0.0.1'
+    '127.0.0.1',
 ]
 
 # --- APPLICATION DEFINITION ---
@@ -40,6 +44,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'django.contrib.postgres',
+    'storages',
     'pgvector',
     'django_celery_results',
     'apps.core',
@@ -95,9 +100,11 @@ DATABASES = {
         'USER': os.getenv("DB_USER", "postgres"),
         'PASSWORD': os.getenv("DB_PASS", "admin@2025"),
         'HOST': os.getenv("DB_HOST", "localhost"),
-        'PORT': os.getenv("DB_PORT", "5432"),
-        'POOL_MODE': 'transaction',
+        'PORT': os.getenv("DB_PORT", "6543"),
         'CONN_MAX_AGE': 30,
+        'TEST': {
+            'CONN_MAX_AGE': 0,
+        },
         'DISABLE_SERVER_SIDE_CURSORS': True,
     }
 }
@@ -133,10 +140,18 @@ REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/1')
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASS = os.getenv("DB_PASS", "admin@2025")
 DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
+DB_PORT = os.getenv("DB_PORT", "6543")
 DB_NAME = os.getenv("DB_NAME", "whatsapp-parser-tool-db")
 
-CELERY_BROKER_URL = f'sqlalchemy+postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
+ENCODED_DB_USER = quote_plus(DB_USER)
+ENCODED_DB_PASS = quote_plus(DB_PASS)
+ENCODED_DB_HOST = quote_plus(DB_HOST)
+ENCODED_DB_NAME = quote_plus(DB_NAME)
+
+CELERY_BROKER_URL = (
+    f"sqlalchemy+postgresql://{ENCODED_DB_USER}:{ENCODED_DB_PASS}"
+    f"@{ENCODED_DB_HOST}:{DB_PORT}/{ENCODED_DB_NAME}"
+)
 
 if not DEBUG and DB_HOST not in ['localhost', '127.0.0.1']:
     CELERY_BROKER_URL += '?sslmode=require'
@@ -146,13 +161,27 @@ if not DEBUG and DB_HOST not in ['localhost', '127.0.0.1']:
 CELERY_RESULT_BACKEND = 'django-db'
 CELERY_BROKER_USE_SSL = False
 CELERY_REDIS_BACKEND_USE_SSL = False
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_CONNECTION_MAX_RETRIES = None
+CELERY_BROKER_CONNECTION_TIMEOUT = int(os.getenv("CELERY_BROKER_CONNECTION_TIMEOUT", "30"))
+CELERY_BROKER_POOL_LIMIT = int(os.getenv("CELERY_BROKER_POOL_LIMIT", "2"))
+CELERY_BROKER_HEARTBEAT = int(os.getenv("CELERY_BROKER_HEARTBEAT", "10"))
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "pool_pre_ping": True,
+}
+CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS = True
 
-CELERY_WORKER_CONCURRENCY = 16
+IS_WINDOWS = os.name == "nt"
+CELERY_WORKER_POOL = os.getenv("CELERY_WORKER_POOL", "threads" if IS_WINDOWS else "prefork")
+CELERY_WORKER_CONCURRENCY = int(
+    os.getenv("CELERY_WORKER_CONCURRENCY", "4")
+)
 # Prevent worker from prefetching too many tasks (fair distribution)
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 # Disable result backend to save Redis Ops (critical for 10k daily limit)
 CELERY_TASK_IGNORE_RESULT = True
 CELERY_TASK_STORE_ERRORS_EVEN_IF_IGNORED = True
+CELERY_WORKER_MAX_TASKS_PER_CHILD = int(os.getenv("CELERY_WORKER_MAX_TASKS_PER_CHILD", "20"))
 
 # --- MOVED CACHE TO DATABASE (SUPABASE) ---
 CACHES = {
@@ -197,19 +226,20 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = [
     BASE_DIR / "static",
 ]
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
-MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
-
-if not os.path.exists(MEDIA_ROOT):
-    os.makedirs(MEDIA_ROOT)
 
 
 # --- MISC ---
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "1536"))
+CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")
+
+VECTOR_DB_URL = os.getenv("VECTOR_DB_URL", "") or None
+VECTOR_COLLECTION_NAME = os.getenv("VECTOR_COLLECTION_NAME", "property_embeddings")
+VECTOR_INSERT_BATCH_SIZE = int(os.getenv("VECTOR_INSERT_BATCH_SIZE", "256"))
 
 OPENAI_CHAT_MODELS = [
     "gpt-4o-mini",
@@ -221,7 +251,11 @@ OPENAI_CHAT_MODELS = [
 # --- SECURITY & HTTPS ---
 
 # Always needed for Render/Vercel
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+else:
+    SECURE_PROXY_SSL_HEADER = None
+
 
 CSRF_TRUSTED_ORIGINS = [
     "https://whatsapp-parser-tool.onrender.com",
@@ -255,3 +289,43 @@ else:
     SECURE_HSTS_SECONDS = 31536000  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
+
+
+import sys
+
+if os.getenv("SKIP_MIGRATIONS", "False") == "True":
+    # Skip migrations
+    MIGRATION_MODULES = {
+        app.split('.')[-1]: None 
+        for app in INSTALLED_APPS 
+        if app.split('.')[-1] != 'pgvector'
+    }
+
+# --- CLOUD STORAGE (AWS S3 / SUPABASE) ---
+
+# Read keys exactly as they are named in your .env
+AWS_ACCESS_KEY_ID = os.getenv("AWS_S3_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_S3_ACCESS_KEY")
+AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL")
+AWS_S3_REGION_NAME = os.getenv("AWS_S3_REGION_NAME", "ap-south-1")
+AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME", "whatsapp-parser-media-bucket")
+
+AWS_S3_FILE_OVERWRITE = False
+AWS_DEFAULT_ACL = 'private'
+
+STORAGES = {
+    "default": {
+        "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+        "OPTIONS": {
+            "access_key": AWS_ACCESS_KEY_ID,
+            "secret_key": AWS_SECRET_ACCESS_KEY,
+            "bucket_name": AWS_STORAGE_BUCKET_NAME,
+            "endpoint_url": AWS_S3_ENDPOINT_URL,
+            "region_name": AWS_S3_REGION_NAME,
+            "file_overwrite": AWS_S3_FILE_OVERWRITE,
+        }
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
