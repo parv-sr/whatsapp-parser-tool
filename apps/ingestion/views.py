@@ -1,5 +1,6 @@
 # apps/ingestion/views.py
 import logging
+from celery import current_app as celery_current_app
 
 import magic
 import zipfile
@@ -225,8 +226,19 @@ def upload_files(request):
                     log.info("raw file created id=%s name=%s mime=%s active_ids=%s", rf.id, rf.file_name, mime, active)
 
                 def schedule_task(file_id):
-                    log.info("queueing celery task file_id=%s", file_id)
-                    result = process_file_task.delay(file_id)
+                    broker_url = getattr(celery_current_app.conf, "broker_url", "unknown")
+                    log.info("queueing celery task file_id=%s broker=%s", file_id, broker_url)
+                    try:
+                        result = process_file_task.delay(file_id)
+                    except Exception as queue_err:
+                        RawFile.objects.filter(pk=file_id).update(
+                            status="FAILED",
+                            notes="Task enqueue failed. Verify Celery broker/worker connectivity.",
+                        )
+                        cache.set(f"progress:{file_id}", 0, timeout=3600)
+                        log.exception("task enqueue failed file_id=%s broker=%s", file_id, broker_url)
+                        raise queue_err
+
                     log.info("task queued file_id=%s task_id=%s", file_id, result.id)
                     return result
 
