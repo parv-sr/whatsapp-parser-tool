@@ -122,9 +122,14 @@ DATABASES = {
 
 is_remote_db = DB_HOST not in ['localhost', '127.0.0.1']
 
+REDIS_URL = os.getenv("REDIS_URL", "").strip()
 CELERY_BROKER_URL = (
-    f"sqlalchemy+postgresql://{ENCODED_DB_USER}:{ENCODED_DB_PASS}"
-    f"@{ENCODED_DB_HOST}:{DB_PORT}/{ENCODED_DB_NAME}"
+    REDIS_URL
+    if REDIS_URL
+    else (
+        f"sqlalchemy+postgresql://{ENCODED_DB_USER}:{ENCODED_DB_PASS}"
+        f"@{ENCODED_DB_HOST}:{DB_PORT}/{ENCODED_DB_NAME}"
+    )
 )
     
 CELERY_BROKER_PORT = "5432" if is_remote_db else DB_PORT
@@ -135,7 +140,8 @@ if not DEBUG and DB_HOST not in ['localhost', '127.0.0.1']:
         'sslmode': 'require',
         'options': '-c search_path=public',
     }
-    CELERY_BROKER_URL += '?sslmode=require'
+    if not REDIS_URL:
+        CELERY_BROKER_URL += '?sslmode=require'
 
 
 
