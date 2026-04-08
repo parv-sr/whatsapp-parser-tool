@@ -3,7 +3,7 @@ import logging
 from celery import Celery
 from celery.schedules import crontab
 from celery.signals import worker_ready, worker_shutting_down, worker_shutdown
-from django.conf import settings
+from config import settings
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 log = logging.getLogger(__name__)
