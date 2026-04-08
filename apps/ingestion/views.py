@@ -15,9 +15,9 @@ from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
 
+from config.celery import app as project_celery_app
 from .forms import MultiTxtUploadForm
 from .models import RawFile
-from .tasks import process_file_task
 
 try:
     import rarfile
@@ -226,23 +226,39 @@ def upload_files(request):
                     log.info("raw file created id=%s name=%s mime=%s active_ids=%s", rf.id, rf.file_name, mime, active)
 
                 def schedule_task(file_id):
-                    broker_url = getattr(celery_current_app.conf, "broker_url", "unknown")
-                    log.info("queueing celery task file_id=%s broker=%s", file_id, broker_url)
+                    current_broker = getattr(celery_current_app.conf, "broker_url", "unknown")
+                    project_broker = getattr(project_celery_app.conf, "broker_url", "unknown")
+                    log.info(
+                        "queueing celery task file_id=%s current_broker=%s project_broker=%s",
+                        file_id,
+                        current_broker,
+                        project_broker,
+                    )
                     try:
-                        result = process_file_task.delay(file_id)
+                        result = project_celery_app.send_task(
+                            "apps.ingestion.tasks.process_file_task",
+                            args=[file_id],
+                            queue="celery",
+                        )
                     except Exception as queue_err:
                         RawFile.objects.filter(pk=file_id).update(
                             status="FAILED",
                             notes="Task enqueue failed. Verify Celery broker/worker connectivity.",
                         )
                         cache.set(f"progress:{file_id}", 0, timeout=3600)
-                        log.exception("task enqueue failed file_id=%s broker=%s", file_id, broker_url)
-                        raise queue_err
+                        log.exception(
+                            "task enqueue failed file_id=%s current_broker=%s project_broker=%s err=%s",
+                            file_id,
+                            current_broker,
+                            project_broker,
+                            queue_err,
+                        )
+                        return None
 
-                    log.info("task queued file_id=%s task_id=%s", file_id, result.id)
+                    log.info("task queued file_id=%s task_id=%s", file_id, getattr(result, "id", None))
                     return result
 
-                transaction.on_commit(lambda fid=rf.id: schedule_task(fid))
+                transaction.on_commit(lambda fid=rf.id: schedule_task(fid), robust=True)
                 log.info("on_commit callback registered file_id=%s", rf.id)
 
             except Exception as exc:
