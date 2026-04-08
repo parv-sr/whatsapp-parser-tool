@@ -182,7 +182,7 @@ CELERY_WORKER_CONCURRENCY = int(
 )
 # Prevent worker from prefetching too many tasks (fair distribution)
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
-# Disable result backend to save Redis Ops (critical for 10k daily limit)
+# Disable result backend to reduce broker/result backend churn
 CELERY_TASK_IGNORE_RESULT = True
 CELERY_TASK_STORE_ERRORS_EVEN_IF_IGNORED = True
 CELERY_WORKER_MAX_TASKS_PER_CHILD = int(os.getenv("CELERY_WORKER_MAX_TASKS_PER_CHILD", "20"))
