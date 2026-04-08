@@ -12,7 +12,13 @@ from .pipeline import process_file_in_background
 
 log = logging.getLogger(__name__)
 
-@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+@shared_task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    max_retries=3,
+    retry_jitter=True,
+)
 def process_file_task(self, file_id):
     """
     Orchestrator Task:
@@ -45,11 +51,12 @@ def process_file_task(self, file_id):
 
         try:
             current_instance = RawFile.objects.get(pk=file_id)
-            file_path = current_instance.file.path
-            default_storage.delete(file_path)
-            log.info(f"Successfully deleted ephemeral file: {file_path}")
+            stored_name = current_instance.file.name
+            if stored_name and default_storage.exists(stored_name):
+                default_storage.delete(stored_name)
+                log.info("Successfully deleted ephemeral file: %s", stored_name)
         except Exception as e:
-            log.warning(f"Failed to delete ephemeral file: {e}")
+            log.warning("Failed to delete ephemeral file for file_id=%s: %s", file_id, e)
             
         
     except Exception as e:
